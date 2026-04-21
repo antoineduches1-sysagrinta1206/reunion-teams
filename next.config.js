@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone', // Required for Railway/Docker deployment
   experimental: {
     serverActions: {
       bodySizeLimit: '10mb',
