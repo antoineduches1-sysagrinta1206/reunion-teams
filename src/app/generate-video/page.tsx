@@ -356,35 +356,61 @@ export default function ScenarioBuilder() {
             setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length}...`, log })
 
             try {
-              const chunkFilename = `chunk-${pid}-${ci}-${Date.now()}.mp4`
-              // Step A: Create prediction (fast, returns immediately)
-              const vRes = await fetch('/api/generate-video', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  audioPath: chunk.wavPath,
-                  photoBase64: c.photoBase64,
-                  prompt: VIDEO_PROMPT,
-                  filename: chunkFilename,
-                }),
-              })
-              const vData = await vRes.json()
-              if (!vData.success || !vData.predictionId) {
-                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR creation - ${vData.error}`)
-                allChunksOk = false
-                break
-              }
-              addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} prediction ${vData.predictionId} creee, attente...`)
+              let chunkSuccess = false
+              // Retry up to 3 times on transient Replicate errors
+              for (let retry = 0; retry < 3 && !chunkSuccess; retry++) {
+                if (cancelledRef.current) break
+                if (retry > 0) {
+                  const wait = retry * 15
+                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} retry ${retry}/3 dans ${wait}s...`)
+                  await new Promise(r => setTimeout(r, wait * 1000))
+                }
 
-              // Step B: Poll for completion
-              const pollResult = await pollPrediction(vData.predictionId, chunkFilename, (msg: string) => {
-                setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length} - ${msg}` } : null)
-              })
-              if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-                chunkVideoPaths.push(pollResult.videoUrl)
-                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} OK`)
-              } else {
-                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR - ${pollResult.error || 'echec'}`)
+                const chunkFilename = `chunk-${pid}-${ci}-${Date.now()}.mp4`
+                // Step A: Create prediction (fast, returns immediately)
+                const vRes = await fetch('/api/generate-video', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    audioPath: chunk.wavPath,
+                    photoBase64: c.photoBase64,
+                    prompt: VIDEO_PROMPT,
+                    filename: chunkFilename,
+                  }),
+                })
+                const vData = await vRes.json()
+                if (!vData.success || !vData.predictionId) {
+                  const errMsg = vData.error || 'unknown'
+                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR creation - ${errMsg}`)
+                  // Retry on transient errors (E004, 503, temporarily unavailable)
+                  if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
+                    continue // retry
+                  }
+                  allChunksOk = false
+                  break
+                }
+                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} prediction ${vData.predictionId} creee, attente...`)
+
+                // Step B: Poll for completion
+                const pollResult = await pollPrediction(vData.predictionId, chunkFilename, (msg: string) => {
+                  setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length} - ${msg}` } : null)
+                })
+                if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+                  chunkVideoPaths.push(pollResult.videoUrl)
+                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} OK`)
+                  chunkSuccess = true
+                } else {
+                  const errMsg = pollResult.error || 'echec'
+                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR - ${errMsg}`)
+                  // Retry on transient errors
+                  if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
+                    continue // retry
+                  }
+                  allChunksOk = false
+                  break
+                }
+              }
+              if (!chunkSuccess && allChunksOk) {
                 allChunksOk = false
                 break
               }
@@ -434,34 +460,55 @@ export default function ScenarioBuilder() {
           addLog(`[VIDEO] ${c.label}: generation video continue (${totalMeetingDuration.toFixed(0)}s)...`)
 
           try {
-            const shortFilename = `meeting-${pid}-${Date.now()}.mp4`
-            // Step A: Create prediction (fast)
-            const vRes = await fetch('/api/generate-video', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                audioPath: audioTrack,
-                photoBase64: c.photoBase64,
-                prompt: VIDEO_PROMPT,
-                filename: shortFilename,
-              }),
-            })
-            const vData = await vRes.json()
-            if (!vData.success || !vData.predictionId) {
-              addLog(`[VIDEO] ${c.label}: ERREUR creation - ${vData.error}`)
-              continue
-            }
-            addLog(`[VIDEO] ${c.label}: prediction ${vData.predictionId} creee, attente...`)
+            let shortSuccess = false
+            // Retry up to 3 times on transient Replicate errors
+            for (let retry = 0; retry < 3 && !shortSuccess; retry++) {
+              if (cancelledRef.current) break
+              if (retry > 0) {
+                const wait = retry * 15
+                addLog(`[VIDEO] ${c.label}: retry ${retry}/3 dans ${wait}s...`)
+                await new Promise(r => setTimeout(r, wait * 1000))
+              }
 
-            // Step B: Poll for completion
-            const pollResult = await pollPrediction(vData.predictionId, shortFilename, (msg: string) => {
-              setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} - ${msg}` } : null)
-            })
-            if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-              videoResults[pid] = pollResult.videoUrl
-              addLog(`[VIDEO] ${c.label}: OK`)
-            } else {
-              addLog(`[VIDEO] ${c.label}: ERREUR - ${pollResult.error || 'echec'}`)
+              const shortFilename = `meeting-${pid}-${Date.now()}.mp4`
+              // Step A: Create prediction (fast)
+              const vRes = await fetch('/api/generate-video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  audioPath: audioTrack,
+                  photoBase64: c.photoBase64,
+                  prompt: VIDEO_PROMPT,
+                  filename: shortFilename,
+                }),
+              })
+              const vData = await vRes.json()
+              if (!vData.success || !vData.predictionId) {
+                const errMsg = vData.error || 'unknown'
+                addLog(`[VIDEO] ${c.label}: ERREUR creation - ${errMsg}`)
+                if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
+                  continue // retry
+                }
+                break
+              }
+              addLog(`[VIDEO] ${c.label}: prediction ${vData.predictionId} creee, attente...`)
+
+              // Step B: Poll for completion
+              const pollResult = await pollPrediction(vData.predictionId, shortFilename, (msg: string) => {
+                setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} - ${msg}` } : null)
+              })
+              if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+                videoResults[pid] = pollResult.videoUrl
+                addLog(`[VIDEO] ${c.label}: OK`)
+                shortSuccess = true
+              } else {
+                const errMsg = pollResult.error || 'echec'
+                addLog(`[VIDEO] ${c.label}: ERREUR - ${errMsg}`)
+                if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
+                  continue // retry
+                }
+                break
+              }
             }
           } catch (err) {
             addLog(`[VIDEO] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
