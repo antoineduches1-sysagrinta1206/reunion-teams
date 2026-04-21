@@ -10,6 +10,7 @@ interface CaseConfig {
   color: string
   photo: string | null
   photoPath: string | null
+  photoBase64: string | null
   voiceId: string
 }
 
@@ -32,10 +33,10 @@ const COLORS = ['#7B83EB', '#E74856', '#00A4EF', '#FFB900', '#9B59B6']
 export default function ScenarioBuilder() {
   const [voices, setVoices] = useState<Record<string, VoiceOption>>({})
   const [cases, setCases] = useState<CaseConfig[]>([
-    { id: 'p1', label: 'Case 1', color: COLORS[0], photo: null, photoPath: null, voiceId: '' },
-    { id: 'p2', label: 'Case 2', color: COLORS[1], photo: null, photoPath: null, voiceId: '' },
-    { id: 'p3', label: 'Case 3', color: COLORS[2], photo: null, photoPath: null, voiceId: '' },
-    { id: 'p4', label: 'Case 4', color: COLORS[3], photo: null, photoPath: null, voiceId: '' },
+    { id: 'p1', label: 'Case 1', color: COLORS[0], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
+    { id: 'p2', label: 'Case 2', color: COLORS[1], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
+    { id: 'p3', label: 'Case 3', color: COLORS[2], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
+    { id: 'p4', label: 'Case 4', color: COLORS[3], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
   ])
   const [lines, setLines] = useState<ScriptLine[]>([
     { id: 'l1', caseId: 'p1', text: '' },
@@ -70,18 +71,13 @@ export default function ScenarioBuilder() {
     // Resize client-side to max 1024px
     const preview = URL.createObjectURL(file)
     const resized = await resizeImage(file, 1024)
-    // Upload via FormData (no body size limit)
-    const form = new FormData()
-    form.append('photo', resized, `${caseId}.jpg`)
-    try {
-      const res = await fetch('/api/upload-photo', { method: 'POST', body: form })
-      const data = await res.json()
-      if (data.url) {
-        setCases(prev => prev.map(c => c.id === caseId ? { ...c, photo: preview, photoPath: data.url } : c))
-      }
-    } catch (err) {
-      console.error('Photo upload failed:', err)
+    // Convert to base64 data URI (stored in memory — survives redeploys)
+    const reader = new FileReader()
+    reader.onload = () => {
+      const base64 = reader.result as string
+      setCases(prev => prev.map(c => c.id === caseId ? { ...c, photo: preview, photoBase64: base64, photoPath: caseId } : c))
     }
+    reader.readAsDataURL(resized)
   }
 
   async function resizeImage(file: File, maxSize: number): Promise<Blob> {
@@ -121,7 +117,7 @@ export default function ScenarioBuilder() {
     const keys = Object.keys(voices)
     setCases(prev => [...prev, {
       id: `p${idx + 1}`, label: `Case ${idx + 1}`, color: COLORS[idx],
-      photo: null, photoPath: null, voiceId: keys[idx] || keys[0] || '',
+      photo: null, photoPath: null, photoBase64: null, voiceId: keys[idx] || keys[0] || '',
     }])
   }
 
@@ -198,7 +194,7 @@ export default function ScenarioBuilder() {
     cancelledRef.current = false // reset cancellation flag
     // Validate
     const usedCases = lines.filter(l => l.text.trim()).map(l => l.caseId).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
-    const missingPhoto = usedCases.filter((cid: string) => !cases.find(c => c.id === cid)?.photoPath)
+    const missingPhoto = usedCases.filter((cid: string) => !cases.find(c => c.id === cid)?.photoBase64)
     if (missingPhoto.length > 0) {
       setGenStatus({ phase: 'error', current: 0, total: 0, detail: `Photo manquante pour: ${missingPhoto.join(', ')}`, log: [] })
       return
@@ -367,7 +363,7 @@ export default function ScenarioBuilder() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   audioPath: chunk.wavPath,
-                  photoPath: c.photoPath,
+                  photoBase64: c.photoBase64,
                   prompt: VIDEO_PROMPT,
                   filename: chunkFilename,
                 }),
@@ -445,7 +441,7 @@ export default function ScenarioBuilder() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 audioPath: audioTrack,
-                photoPath: c.photoPath,
+                photoBase64: c.photoBase64,
                 prompt: VIDEO_PROMPT,
                 filename: shortFilename,
               }),
