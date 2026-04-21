@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.env.local
+*.log
+.DS_Store
+
+# Exclude all generated media
+public/audio-generated/
+public/videos-generated/

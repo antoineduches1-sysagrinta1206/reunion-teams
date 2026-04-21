@@ -1,0 +1,20 @@
+{
+  "segments": [
+    {
+      "id": "s01",
+      "speaker": "p1",
+      "role": "Case 1",
+      "video": "/videos-generated/talk-1-p1-1776330858345.mp4"
+    },
+    {
+      "id": "s02",
+      "speaker": "p2",
+      "role": "Case 2",
+      "video": "/videos-generated/talk-2-p2-1776331058954.mp4"
+    }
+  ],
+  "idle": {
+    "p1": "/videos-generated/p1-idle-1776330381040.mp4",
+    "p2": "/videos-generated/p2-idle-1776330615800.mp4"
+  }
+}

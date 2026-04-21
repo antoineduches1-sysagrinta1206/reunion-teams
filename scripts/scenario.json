@@ -1,0 +1,119 @@
+{
+  "title": "Réunion opération confidentielle",
+  "participants": {
+    "p1": { "role": "CEO", "name": "James Ashworth", "voiceId": "TX3LPaxmHKxFdv7VOQHJ", "gender": "male" },
+    "p2": { "role": "CFO", "name": "Marcus Chen", "voiceId": "bIHbv24MWmeRgasZH58o", "gender": "male" },
+    "p3": { "role": "AVOCAT", "name": "Philippe Sinclair", "voiceId": "N2lVS1w4EtoT3dr4eOWO", "gender": "male" },
+    "p4": { "role": "FCA", "name": "Edward Montgomery", "voiceId": "ErXwobaYiN019PkySvjV", "gender": "male" }
+  },
+  "sequence": [
+    {
+      "id": "s01",
+      "speaker": "p1",
+      "text": "Bonjour à tous… vous m'entendez bien ? Parfait. Merci d'être disponibles à court préavis. Je vais rester assez direct, l'objectif de cet appel est d'aligner tout le monde sur une opération en cours. Sont présents aujourd'hui : Marcus, notre conseil juridique, et un représentant de la Financial Conduct Authority qui suit le dossier dans un cadre réglementaire. Je vais laisser notre avocat reprendre la main.",
+      "prompt": "Static fixed webcam shot, no camera movement. A professional man in a suit sits calmly at his desk in a modern office during a video meeting. He speaks slowly and naturally to the camera with minimal subtle gestures. Composed and authoritative."
+    },
+    {
+      "id": "s02",
+      "speaker": "p3",
+      "text": "Merci. Bonjour à tous. Marcus, avant d'entrer dans le sujet, je veux simplement confirmer, vous avez bien signé l'accord de confidentialité qui vous a été transmis ?",
+      "prompt": "Static fixed webcam shot, no camera movement. A composed man in a well-lit office speaks directly to the camera in a video call. Calm and slow delivery, minimal head movement, hands resting on desk."
+    },
+    {
+      "id": "s03",
+      "speaker": "p2",
+      "text": "Oui… c'est signé. Par contre je dois être transparent, je n'ai pas encore une vision complète de l'opération.",
+      "prompt": "Static fixed webcam shot, no camera movement. A cautious man in a modern office responds calmly during a video meeting. Slightly hesitant expression, slow nod, hands resting near desk."
+    },
+    {
+      "id": "s04",
+      "speaker": "p3",
+      "text": "C'est normal à ce stade. Vous êtes intégré sur une base ciblée pour ce call. L'objectif ici est très simple : valider des éléments financiers clés, confirmer la trésorerie, et s'assurer de la cohérence des données déjà partagées. On ne va pas entrer dans tous les détails aujourd'hui.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man speaks reassuringly to the camera during a video call. Slow calm gestures, professional office background, minimal nods while explaining."
+    },
+    {
+      "id": "s05",
+      "speaker": "p4",
+      "text": "Merci. Je vais simplement me présenter brièvement. Je suis ici dans le cadre du suivi réglementaire de l'opération. Mon rôle est de m'assurer que les échanges restent conformes et correctement encadrés. Je rappelle que toutes les informations partagées doivent être exactes, complètes et vérifiables. Et point important : toute communication liée à ce dossier doit rester strictement dans le cadre prévu par l'accord de confidentialité. Donc uniquement via WhatsApp personnel ou email personnel. Aucun autre canal ne doit être utilisé. Et aucune diffusion interne, board, équipes ou tiers, sans validation préalable.",
+      "prompt": "Static fixed webcam shot, no camera movement. An institutional man in a formal office speaks slowly with authority during a video meeting. Minimal measured gestures, serious expression, deliberate pauses between sentences."
+    },
+    {
+      "id": "s06",
+      "speaker": "p3",
+      "text": "Merci pour ces précisions. Marcus, on va commencer simplement. Pouvez-vous confirmer que les derniers relevés bancaires transmis correspondent bien à la situation actuelle de la filiale ?",
+      "prompt": "Static fixed webcam shot, no camera movement. A man asks a direct question during a video call. Professional posture, calm and still, focused expression."
+    },
+    {
+      "id": "s07",
+      "speaker": "p2",
+      "text": "Oui… à ma connaissance, c'est bien le cas. Les relevés sont à jour et reflètent la situation actuelle.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man responds carefully in a video meeting. Brief slow nod, measured tone, hands resting on desk."
+    },
+    {
+      "id": "s08",
+      "speaker": "p3",
+      "text": "Très bien. Et concernant les engagements de la société, est-ce qu'il existe des passifs significatifs… ou des éléments hors bilan… qui n'auraient pas été communiqués ?",
+      "prompt": "Static fixed webcam shot, no camera movement. A man poses an important question during a video call. Slight pause between phrases, calm professional expression, still posture."
+    },
+    {
+      "id": "s09",
+      "speaker": "p2",
+      "text": "Non… pas à ma connaissance. Mais je préfère refaire une vérification complète en interne pour confirmer.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man shows slight doubt during a video meeting. Brief pause before answering, thoughtful expression, very subtle head movement."
+    },
+    {
+      "id": "s10",
+      "speaker": "p3",
+      "text": "Très bien, c'est exactement la bonne approche. On vous demandera une confirmation écrite après cet échange.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man nods slowly and approvingly during a video call. Reassuring calm expression, minimal gesture."
+    },
+    {
+      "id": "s11",
+      "speaker": "p3",
+      "text": "On aura également besoin de valider : la trésorerie disponible à date, les flux récents, et confirmer qu'il n'y a pas eu de mouvements atypiques récemment.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man lists items methodically during a video call. Subtle counting gesture, slow clear structured delivery."
+    },
+    {
+      "id": "s12",
+      "speaker": "p2",
+      "text": "D'accord… je vais consolider ça et vous transmettre les éléments rapidement.",
+      "prompt": "Static fixed webcam shot, no camera movement. A cooperative man agrees calmly during a video meeting. Slow nod, minimal gesture of acknowledgment."
+    },
+    {
+      "id": "s13",
+      "speaker": "p4",
+      "text": "Très bien. Juste pour compléter, les éléments transmis pourront être revus dans le cadre de la revue globale. Donc prenez le temps de vérifier correctement avant confirmation.",
+      "prompt": "Static fixed webcam shot, no camera movement. An institutional man gives measured advice slowly during a video meeting. Very calm tone, deliberate pacing, hands clasped, still posture."
+    },
+    {
+      "id": "s14",
+      "speaker": "p1",
+      "text": "Oui, exactement. Marcus, pour la suite de l'opération, tu vas travailler directement avec notre avocat. Je veux que tu sois totalement aligné avec lui sur le suivi du dossier. Il va te guider sur les éléments à produire, les vérifications à effectuer, et les actions à mener dans le cadre de cette opération. Je compte sur toi pour être très réactif et pour exécuter ce qui est nécessaire afin qu'on avance proprement et sans friction. On est dans une phase où la coordination est essentielle.",
+      "prompt": "Static fixed webcam shot, no camera movement. A CEO man speaks with natural authority during a video meeting. Delegating tasks calmly, minimal forward lean, subtle hand gestures, warm but firm tone."
+    },
+    {
+      "id": "s15",
+      "speaker": "p3",
+      "text": "Très bien, merci à tous.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man wraps up a video meeting with a brief closing remark. Professional subtle smile, slight nod."
+    },
+    {
+      "id": "s16",
+      "speaker": "p4",
+      "text": "Merci, bonne continuation.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man gives a formal goodbye in a video meeting. Brief slow nod, professional calm expression."
+    },
+    {
+      "id": "s17",
+      "speaker": "p2",
+      "text": "Merci à vous.",
+      "prompt": "Static fixed webcam shot, no camera movement. A man says a brief goodbye in a video meeting. Polite slow nod."
+    },
+    {
+      "id": "s18",
+      "speaker": "p1",
+      "text": "Bonne journée à vous.",
+      "prompt": "Static fixed webcam shot, no camera movement. A CEO man gives a warm closing in a video meeting. Natural subtle smile, minimal wave gesture."
+    }
+  ]
+}

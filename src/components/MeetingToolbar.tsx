@@ -1,0 +1,176 @@
+'use client'
+
+import React from 'react'
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  MonitorUp,
+  MessageSquare,
+  Users,
+  Hand,
+  Smile,
+  LayoutGrid,
+  MoreHorizontal,
+  PhoneOff,
+  ChevronDown,
+} from 'lucide-react'
+
+interface ToolbarButtonProps {
+  icon: React.ReactNode
+  label: string
+  active?: boolean
+  hasArrow?: boolean
+  onClick?: () => void
+}
+
+function ToolbarButton({ icon, label, active, hasArrow, onClick }: ToolbarButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      className={`
+        flex flex-col items-center justify-center px-3 py-1 rounded-md transition-colors gap-0.5 relative
+        ${active ? 'bg-gray-200' : 'hover:bg-gray-100'}
+      `}
+    >
+      <div className="flex items-center gap-0.5">
+        {icon}
+        {hasArrow && <ChevronDown className="w-3 h-3 text-teams-icon" />}
+      </div>
+      <span className="text-[10px] text-teams-text-secondary whitespace-nowrap">{label}</span>
+    </button>
+  )
+}
+
+interface MeetingToolbarProps {
+  isMuted: boolean
+  isVideoOff: boolean
+  onToggleMute: () => void
+  onToggleVideo: () => void
+  onToggleChat: () => void
+  onToggleParticipants: () => void
+  participantCount: number
+  elapsed: number
+}
+
+export default function MeetingToolbar({
+  isMuted,
+  isVideoOff,
+  onToggleMute,
+  onToggleVideo,
+  onToggleChat,
+  onToggleParticipants,
+  participantCount,
+  elapsed,
+}: MeetingToolbarProps) {
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+  }
+
+  return (
+    <div className="h-[52px] bg-teams-toolbar flex items-center justify-between px-3 border-b border-teams-border">
+      {/* Left - Timer */}
+      <div className="flex items-center gap-2 min-w-[100px]">
+        <div className="flex items-center gap-1.5">
+          <svg className="w-4 h-4 text-teams-icon animate-spin" style={{ animationDuration: '3s' }} viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 3" />
+          </svg>
+          <span className="text-[13px] text-teams-text tabular-nums">{formatTime(elapsed)}</span>
+        </div>
+      </div>
+
+      {/* Center - Main controls */}
+      <div className="flex items-center gap-0.5">
+        <ToolbarButton
+          icon={<MessageSquare className="w-[18px] h-[18px] text-teams-icon" />}
+          label="Conversation"
+          onClick={onToggleChat}
+        />
+        <ToolbarButton
+          icon={<Users className="w-[18px] h-[18px] text-teams-icon" />}
+          label="Participants"
+          onClick={onToggleParticipants}
+        />
+        <ToolbarButton
+          icon={<Hand className="w-[18px] h-[18px] text-teams-icon" />}
+          label="Lever la main"
+        />
+        <ToolbarButton
+          icon={<Smile className="w-[18px] h-[18px] text-teams-icon" />}
+          label="Réagir"
+        />
+        <ToolbarButton
+          icon={<LayoutGrid className="w-[18px] h-[18px] text-teams-icon" />}
+          label="Affichage"
+        />
+        <ToolbarButton
+          icon={<MoreHorizontal className="w-[18px] h-[18px] text-teams-icon" />}
+          label="Autres"
+        />
+
+        {/* Separator */}
+        <div className="w-px h-8 bg-teams-border mx-2"></div>
+
+        {/* Camera */}
+        <button
+          onClick={onToggleVideo}
+          className={`flex flex-col items-center justify-center px-3 py-1 rounded-md transition-colors gap-0.5 ${
+            isVideoOff ? 'hover:bg-gray-100' : 'hover:bg-gray-100'
+          }`}
+        >
+          <div className="flex items-center gap-0.5">
+            {isVideoOff ? (
+              <VideoOff className="w-[18px] h-[18px] text-teams-red" />
+            ) : (
+              <Video className="w-[18px] h-[18px] text-teams-icon" />
+            )}
+            <ChevronDown className="w-3 h-3 text-teams-icon" />
+          </div>
+          <span className="text-[10px] text-teams-text-secondary">Caméra</span>
+        </button>
+
+        {/* Microphone */}
+        <button
+          onClick={onToggleMute}
+          className={`flex flex-col items-center justify-center px-3 py-1 rounded-md transition-colors gap-0.5 ${
+            isMuted ? 'hover:bg-gray-100' : 'hover:bg-gray-100'
+          }`}
+        >
+          <div className="flex items-center gap-0.5">
+            {isMuted ? (
+              <MicOff className="w-[18px] h-[18px] text-teams-red" />
+            ) : (
+              <Mic className="w-[18px] h-[18px] text-teams-icon" />
+            )}
+            <ChevronDown className="w-3 h-3 text-teams-icon" />
+          </div>
+          <span className="text-[10px] text-teams-text-secondary">Microphone</span>
+        </button>
+
+        {/* Share */}
+        <button className="flex flex-col items-center justify-center px-3 py-1 rounded-md hover:bg-gray-100 transition-colors gap-0.5">
+          <div className="flex items-center gap-0.5">
+            <MonitorUp className="w-[18px] h-[18px] text-teams-icon" />
+            <ChevronDown className="w-3 h-3 text-teams-icon" />
+          </div>
+          <span className="text-[10px] text-teams-text-secondary">Partager</span>
+        </button>
+
+        {/* Leave button */}
+        <button className="flex flex-col items-center justify-center px-3 py-1 rounded-md hover:bg-red-50 transition-colors gap-0.5 ml-1">
+          <div className="flex items-center gap-0.5">
+            <PhoneOff className="w-[18px] h-[18px] text-teams-red" />
+            <ChevronDown className="w-3 h-3 text-teams-red" />
+          </div>
+          <span className="text-[10px] text-teams-red">Quitter</span>
+        </button>
+      </div>
+
+      {/* Right - empty space for balance */}
+      <div className="min-w-[100px]"></div>
+    </div>
+  )
+}
