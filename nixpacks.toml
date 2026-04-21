@@ -1,0 +1,6 @@
+# Nixpacks config for Railway deployment
+[phases.setup]
+aptPkgs = ["ffmpeg"]
+
+[start]
+cmd = "npm run start"

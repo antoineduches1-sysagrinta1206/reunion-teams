@@ -8,12 +8,17 @@ export const runtime = 'nodejs'
 
 const execFileAsync = promisify(execFile)
 
-// Get ffmpeg binary path — resolve from node_modules directly
-// (require('ffmpeg-static') gets mangled by Next.js bundler)
+// Get ffmpeg binary path — try node_modules first, then system ffmpeg
 function getFfmpegPath(): string {
+  // Try ffmpeg-static in node_modules (works locally)
   const ffmpegInModules = path.join(process.cwd(), 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
-  if (fs.existsSync(ffmpegInModules)) return ffmpegInModules
-  return 'ffmpeg' // fallback to system ffmpeg
+  if (fs.existsSync(ffmpegInModules)) {
+    console.log('[CONCAT] Using ffmpeg-static from node_modules')
+    return ffmpegInModules
+  }
+  // Fallback to system ffmpeg (installed via nixpacks on Railway)
+  console.log('[CONCAT] Using system ffmpeg')
+  return 'ffmpeg'
 }
 
 // Concatenate multiple MP4 video files into one using ffmpeg
