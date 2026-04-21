@@ -50,6 +50,8 @@ export default function ScenarioBuilder() {
   const [meetingLink, setMeetingLink] = useState<string | null>(null)
   const [adminLink, setAdminLink] = useState<string | null>(null)
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const [activePredictions, setActivePredictions] = useState<string[]>([])
+  const cancelledRef = useRef(false)
 
   // Load voices
   useEffect(() => {
@@ -135,30 +137,65 @@ export default function ScenarioBuilder() {
     filename: string,
     onProgress?: (msg: string) => void
   ): Promise<{ status: string; videoUrl?: string; error?: string }> => {
+    // Track this prediction
+    setActivePredictions(prev => [...prev, predictionId])
     const MAX_POLLS = 720 // 720 × 5s = 1h max
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise(r => setTimeout(r, 5000))
-      try {
-        const res = await fetch(`/api/check-prediction?id=${predictionId}&filename=${encodeURIComponent(filename)}`)
-        const data = await res.json()
-        if (data.status === 'succeeded') {
-          return { status: 'succeeded', videoUrl: data.videoUrl }
+    try {
+      for (let i = 0; i < MAX_POLLS; i++) {
+        // Check if cancelled
+        if (cancelledRef.current) {
+          return { status: 'failed', error: 'Annulé par l\'utilisateur' }
         }
-        if (data.status === 'failed') {
-          return { status: 'failed', error: data.error }
+        await new Promise(r => setTimeout(r, 5000))
+        if (cancelledRef.current) {
+          return { status: 'failed', error: 'Annulé par l\'utilisateur' }
         }
-        if (onProgress && i % 3 === 0) {
-          onProgress(`${data.status}... (${i * 5}s)`)
+        try {
+          const res = await fetch(`/api/check-prediction?id=${predictionId}&filename=${encodeURIComponent(filename)}`)
+          const data = await res.json()
+          if (data.status === 'succeeded') {
+            return { status: 'succeeded', videoUrl: data.videoUrl }
+          }
+          if (data.status === 'failed') {
+            return { status: 'failed', error: data.error }
+          }
+          if (onProgress && i % 3 === 0) {
+            onProgress(`${data.status}... (${i * 5}s)`)
+          }
+        } catch {
+          // Network hiccup — continue polling
         }
-      } catch {
-        // Network hiccup — continue polling
       }
+      return { status: 'failed', error: 'Timeout (1h)' }
+    } finally {
+      setActivePredictions(prev => prev.filter(id => id !== predictionId))
     }
-    return { status: 'failed', error: 'Timeout (1h)' }
+  }
+
+  // Stop all running generations — cancel predictions on Replicate
+  const handleStopGeneration = async () => {
+    cancelledRef.current = true
+    setGenStatus(prev => prev ? { ...prev, detail: 'Annulation en cours...' } : null)
+
+    // Cancel all active predictions on Replicate
+    if (activePredictions.length > 0) {
+      try {
+        await fetch('/api/cancel-prediction', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ predictionIds: activePredictions }),
+        })
+      } catch {}
+    }
+
+    setActivePredictions([])
+    setIsGenerating(false)
+    setGenStatus(prev => prev ? { ...prev, phase: 'error', detail: 'Génération arrêtée' } : null)
   }
 
   // Generate everything — 3-phase continuous video approach
   const handleGenerateAll = useCallback(async () => {
+    cancelledRef.current = false // reset cancellation flag
     // Validate
     const usedCases = lines.filter(l => l.text.trim()).map(l => l.caseId).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
     const missingPhoto = usedCases.filter((cid: string) => !cases.find(c => c.id === cid)?.photoPath)
@@ -608,18 +645,31 @@ export default function ScenarioBuilder() {
 
           {/* Generate all */}
           <div style={{ marginTop: 16, borderTop: '1px solid #2a2a2a', paddingTop: 16 }}>
-            <button
-              onClick={handleGenerateAll}
-              disabled={isGenerating}
-              style={{
-                width: '100%', padding: '14px 24px', borderRadius: 8, border: 'none', fontSize: 15, fontWeight: 700,
-                cursor: isGenerating ? 'wait' : 'pointer',
-                background: isGenerating ? '#333' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-                color: 'white',
-              }}
-            >
-              {isGenerating ? 'Generation en cours...' : 'Generer tout le scenario'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={handleGenerateAll}
+                disabled={isGenerating}
+                style={{
+                  flex: 1, padding: '14px 24px', borderRadius: 8, border: 'none', fontSize: 15, fontWeight: 700,
+                  cursor: isGenerating ? 'wait' : 'pointer',
+                  background: isGenerating ? '#333' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                  color: 'white',
+                }}
+              >
+                {isGenerating ? 'Generation en cours...' : 'Generer tout le scenario'}
+              </button>
+              {isGenerating && (
+                <button
+                  onClick={handleStopGeneration}
+                  style={{
+                    padding: '14px 20px', borderRadius: 8, border: '2px solid #ef4444', fontSize: 14, fontWeight: 700,
+                    cursor: 'pointer', background: '#1a1a1a', color: '#ef4444',
+                  }}
+                >
+                  STOP
+                </button>
+              )}
+            </div>
 
             {/* Progress */}
             {genStatus && (
