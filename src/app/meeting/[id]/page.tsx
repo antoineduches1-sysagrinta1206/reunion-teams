@@ -74,6 +74,7 @@ function MeetingRoomInner() {
   const localStreamRef = useRef<MediaStream | null>(null)
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null)
   const rtcInitRef = useRef(false)
+  const [rtcReinitCounter, setRtcReinitCounter] = useState(0)
 
   // Fetch meeting data
   useEffect(() => {
@@ -437,6 +438,8 @@ function MeetingRoomInner() {
       }
       setRemoteStream(null)
       rtcInitRef.current = false // allow re-init
+      // Bump counter to force the init useEffect to re-run (refs don't trigger re-renders)
+      setRtcReinitCounter(c => c + 1)
     }
   }, [isAdmin, joined, localStream, meetingState.clientJoined])
 
@@ -458,12 +461,13 @@ function MeetingRoomInner() {
   }
 
   // Admin: create RTCPeerConnection and send offer after getting local stream
+  // rtcReinitCounter in deps ensures this re-runs when client joins and we need to re-init
   useEffect(() => {
     if (!isAdmin || !joined || !localStream || rtcInitRef.current) return
     rtcInitRef.current = true
 
     const initRTC = async () => {
-      console.log('[ADMIN-RTC] Initializing peer connection...')
+      console.log(`[ADMIN-RTC] Initializing peer connection... (reinit #${rtcReinitCounter})`)
       const pc = new RTCPeerConnection(iceConfig)
       peerRef.current = pc
 
@@ -485,6 +489,7 @@ function MeetingRoomInner() {
           peerRef.current = null
           rtcInitRef.current = false
           setRemoteStream(null)
+          setRtcReinitCounter(c => c + 1)
         }
       }
 
@@ -518,7 +523,7 @@ function MeetingRoomInner() {
     }
 
     initRTC().catch(e => console.error('[ADMIN-RTC] Error:', e))
-  }, [isAdmin, joined, localStream, meetingId, adminKey])
+  }, [isAdmin, joined, localStream, meetingId, adminKey, rtcReinitCounter])
 
   // Admin: set remote description when client's answer arrives via polling
   useEffect(() => {
@@ -531,9 +536,24 @@ function MeetingRoomInner() {
   }, [isAdmin, rtcData])
 
   // Client: when admin's offer arrives via polling, create answer and send back
-  // Only process if admin is actually joined (prevents stale offers from previous sessions)
+  // Track the last offer SDP we processed to detect new offers from admin re-init
+  const lastOfferSdpRef = useRef<string | null>(null)
+
   useEffect(() => {
-    if (isAdmin || !joined || !localStream || !rtcData?.offer || peerRef.current || !meetingState.adminJoined) return
+    if (isAdmin || !joined || !localStream || !rtcData?.offer || !meetingState.adminJoined) return
+
+    // Skip if we already processed this exact offer
+    const offerSdp = rtcData.offer.sdp
+    if (lastOfferSdpRef.current === offerSdp && peerRef.current) return
+    lastOfferSdpRef.current = offerSdp
+
+    // Close existing peer if any (admin sent a new offer = re-init)
+    if (peerRef.current) {
+      console.log('[CLIENT-RTC] New offer detected, closing old peer...')
+      peerRef.current.close()
+      peerRef.current = null
+      setRemoteStream(null)
+    }
 
     const handleOffer = async () => {
       console.log('[CLIENT-RTC] Got offer from admin, creating answer...')
@@ -557,6 +577,7 @@ function MeetingRoomInner() {
           console.warn('[CLIENT-RTC] Connection lost')
           peerRef.current?.close()
           peerRef.current = null
+          lastOfferSdpRef.current = null // allow re-processing next offer
           setRemoteStream(null)
         }
       }
