@@ -56,6 +56,8 @@ function MeetingRoomInner() {
   const [meetingState, setMeetingState] = useState<MeetingState>({ started: false, startedAt: null, clientJoined: false, adminJoined: false })
   const [displayName, setDisplayName] = useState(isAdmin ? 'Admin' : 'Client')
   const prevClientJoinedRef = useRef(false)
+  const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({})
+  const [audioBlocked, setAudioBlocked] = useState(false)
 
   const audioElRef = useRef<HTMLAudioElement>(null)
   const liveVideoRef = useRef<HTMLVideoElement>(null)
@@ -184,12 +186,12 @@ function MeetingRoomInner() {
       meetingData.participants.forEach(p => {
         const vid = videoRefs.current[p.id]
         if (!vid) return
-        const shouldBeMuted = (p.id !== currentSpeaker)
-        vid.muted = shouldBeMuted
+        const isSpeaker = (p.id === currentSpeaker)
+        // Use volume (not muted) — muted toggling is blocked by browsers without gesture
+        vid.volume = isSpeaker ? 1 : 0
 
-        // If this video should be playing audio and it's paused, try to resume
-        if (!shouldBeMuted && vid.paused) {
-          console.warn(`[TICKER] ${p.name} should play audio but video is PAUSED! Resuming...`)
+        // If video is paused or stalled, try to resume
+        if (vid.paused || vid.readyState < 2) {
           vid.play().catch(() => {})
         }
       })
@@ -200,17 +202,16 @@ function MeetingRoomInner() {
         const states = meetingData.participants.map(p => {
           const v = videoRefs.current[p.id]
           if (!v) return `${p.name}:NO_REF`
-          return `${p.name}:${v.paused ? 'PAUSED' : 'PLAY'} t=${v.currentTime.toFixed(1)} muted=${v.muted}`
+          return `${p.name}:${v.paused ? 'PAUSED' : 'PLAY'} t=${v.currentTime.toFixed(1)} vol=${v.volume}`
         }).join(' | ')
         console.log(`[STATE] clock=${now.toFixed(1)}s speaker=${currentSpeaker || 'none'} | ${states}`)
       }
 
       if (currentSpeaker !== lastSpeaker) {
         const name = currentSpeaker ? meetingData.participants.find(p => p.id === currentSpeaker)?.name : 'nobody'
-        // Log FULL state on speaker change
         const states = meetingData.participants.map(p => {
           const v = videoRefs.current[p.id]
-          return v ? `${p.name}:${v.paused?'PAUSED':'OK'} muted=${v.muted}` : `${p.name}:NULL`
+          return v ? `${p.name}:${v.paused?'PAUSED':'OK'} vol=${v.volume}` : `${p.name}:NULL`
         }).join(' | ')
         console.log(`[TICKER] t=${now.toFixed(1)}s speaker=${name} | ${states}`)
         lastSpeaker = currentSpeaker
@@ -230,47 +231,70 @@ function MeetingRoomInner() {
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [joined, meetingData])
 
-  // Start all videos muted, ticker handles unmuting the active speaker
+  // Start all videos — uses volume=0 instead of muted (avoids browser unmute block)
   const startAllVideos = useCallback(async (syncToTime?: number) => {
     if (!meetingData) return
     const startOffset = syncToTime || 0
     console.log(`[PLAY] Starting ${meetingData.participants.length} videos, sync=${startOffset.toFixed(1)}s`)
 
-    // Wait for all videos to have enough data to play
-    const waitForReady = (vid: HTMLVideoElement): Promise<void> => {
-      return new Promise(resolve => {
-        if (vid.readyState >= 3) return resolve() // HAVE_FUTURE_DATA
-        const onReady = () => { vid.removeEventListener('canplay', onReady); resolve() }
-        vid.addEventListener('canplay', onReady)
-        vid.load() // force load
-        setTimeout(resolve, 5000) // timeout safety
-      })
-    }
+    // Mark all videos as loading
+    const loadingState: Record<string, boolean> = {}
+    meetingData.participants.forEach(p => { loadingState[p.id] = true })
+    setVideoLoading(loadingState)
 
-    // Wait for all videos to be ready
-    const readyPromises: Promise<void>[] = []
-    meetingData.participants.forEach(p => {
-      const vid = videoRefs.current[p.id]
-      if (vid) readyPromises.push(waitForReady(vid))
-    })
-    await Promise.all(readyPromises)
-    console.log(`[PLAY] All ${readyPromises.length} videos ready, starting playback...`)
-
-    // Set sync time and start all at once
-    meetingData.participants.forEach(p => {
+    // Start each video independently (don't wait for all — slow connection friendly)
+    const startSingleVideo = async (p: MeetingParticipant, retryCount = 0): Promise<void> => {
       const vid = videoRefs.current[p.id]
       if (!vid) return
-      if (startOffset > 0) {
-        const d = vid.duration
-        vid.currentTime = (d && d > 0 && startOffset > d) ? startOffset % d : startOffset
+
+      // Wait for enough data (up to 30s, not 5s)
+      if (vid.readyState < 2) {
+        await new Promise<void>(resolve => {
+          const onReady = () => { vid.removeEventListener('canplaythrough', onReady); vid.removeEventListener('canplay', onReady); resolve() }
+          vid.addEventListener('canplay', onReady)
+          vid.addEventListener('canplaythrough', onReady)
+          vid.load()
+          setTimeout(resolve, 30000) // 30s timeout for slow connections
+        })
       }
-      vid.muted = true // start muted for autoplay policy
-      vid.play().then(() => {
-        console.log(`[PLAY] ${p.name}: playing (duration=${vid.duration.toFixed(1)}s)`)
-      }).catch(err => {
-        console.error(`[PLAY] ${p.name}: play failed:`, err.message)
-      })
-    })
+
+      // Sync time
+      if (startOffset > 0 && vid.duration > 0) {
+        vid.currentTime = startOffset > vid.duration ? startOffset % vid.duration : startOffset
+      }
+
+      // Use volume=0 (NOT muted) — this way vid.muted stays false from user gesture
+      vid.muted = false
+      vid.volume = 0
+
+      try {
+        await vid.play()
+        console.log(`[PLAY] ${p.name}: playing (d=${vid.duration.toFixed(1)}s, ready=${vid.readyState})`)
+        setVideoLoading(prev => ({ ...prev, [p.id]: false }))
+      } catch (err: any) {
+        console.warn(`[PLAY] ${p.name}: play failed (attempt ${retryCount}): ${err.message}`)
+        if (retryCount < 5) {
+          // Retry: if autoplay blocked without muted, fallback to muted then unmute later
+          if (err.name === 'NotAllowedError') {
+            vid.muted = true
+            vid.volume = 0
+            try {
+              await vid.play()
+              console.log(`[PLAY] ${p.name}: playing muted (fallback)`)
+              setVideoLoading(prev => ({ ...prev, [p.id]: false }))
+              setAudioBlocked(true) // show "click to enable audio" banner
+              return
+            } catch {}
+          }
+          await new Promise(r => setTimeout(r, 2000 * (retryCount + 1)))
+          return startSingleVideo(p, retryCount + 1)
+        }
+        setVideoLoading(prev => ({ ...prev, [p.id]: false }))
+      }
+    }
+
+    // Start all in parallel — each independently handles its own loading
+    await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
 
     playStartRef.current = Date.now() - (startOffset * 1000)
     console.log(`[PLAY] All started, playStartRef=${playStartRef.current}`)
@@ -368,6 +392,36 @@ function MeetingRoomInner() {
       return () => { cancelled = true; clearTimeout(t) }
     }
   }, [isAdmin, joined, meetingState.clientJoined, meetingState.startedAt, meetingData, startAllVideos])
+
+  // Watchdog: monitor videos every 3s — restart any that are paused/stalled/errored
+  useEffect(() => {
+    if (!joined || !meetingData || playStartRef.current === 0) return
+    const watchdog = setInterval(() => {
+      meetingData.participants.forEach(p => {
+        const vid = videoRefs.current[p.id]
+        if (!vid) return
+        // Restart paused videos
+        if (vid.paused && vid.readyState >= 2) {
+          console.warn(`[WATCHDOG] ${p.name}: paused, restarting...`)
+          vid.play().catch(() => {})
+        }
+        // Reload errored videos
+        if (vid.error) {
+          console.warn(`[WATCHDOG] ${p.name}: error ${vid.error.code}, reloading...`)
+          const src = vid.src
+          vid.src = ''
+          vid.src = src
+          vid.load()
+          setTimeout(() => { vid.play().catch(() => {}) }, 2000)
+        }
+        // Handle stalled (buffering) — if currentTime hasn't changed in 6s
+        if (vid.readyState < 2 && !vid.paused) {
+          console.warn(`[WATCHDOG] ${p.name}: buffering (readyState=${vid.readyState})`)
+        }
+      })
+    }, 3000)
+    return () => clearInterval(watchdog)
+  }, [joined, meetingData])
 
   // Admin: re-initialize WebRTC when client joins (RTC data gets cleared on join)
   useEffect(() => {
@@ -742,6 +796,29 @@ function MeetingRoomInner() {
         </div>
       </div>
 
+      {/* Audio blocked banner — click to unmute */}
+      {audioBlocked && (
+        <button
+          onClick={() => {
+            // User gesture: unmute all videos
+            if (meetingData) {
+              meetingData.participants.forEach(p => {
+                const vid = videoRefs.current[p.id]
+                if (vid) {
+                  vid.muted = false
+                  // Keep volume as ticker manages it
+                }
+              })
+            }
+            setAudioBlocked(false)
+          }}
+          className="w-full bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium py-2 px-4 flex items-center justify-center gap-2 transition-colors"
+        >
+          <Mic className="w-4 h-4" />
+          Cliquez ici pour activer le son
+        </button>
+      )}
+
       {/* Main layout */}
       <div className="flex-1 flex flex-col">
         <MeetingToolbar
@@ -782,8 +859,17 @@ function MeetingRoomInner() {
                       preload="auto"
                       playsInline
                       loop
+                      crossOrigin="anonymous"
                       className="absolute inset-0 w-full h-full object-cover"
                     />
+
+                    {/* Loading overlay */}
+                    {videoLoading[p.id] && (
+                      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#1a1a1a]/80">
+                        <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-[11px] text-gray-400 mt-2">Chargement...</span>
+                      </div>
+                    )}
 
                     {/* Name label */}
                     <div className="absolute bottom-0 left-0 right-0 z-20">
