@@ -347,6 +347,21 @@ function MeetingRoomInner() {
 
   // ==================== WebRTC: Admin <-> Client live communication ====================
 
+  // ICE servers: multiple STUN + free TURN for cross-network connectivity
+  const iceConfig = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      // Free TURN servers from Metered (relay for symmetric NAT)
+      { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
+      { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
+      { urls: 'turn:a.relay.metered.ca:443?transport=tcp', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
+    ]
+  }
+
   // Admin: create RTCPeerConnection and send offer after getting local stream
   useEffect(() => {
     if (!isAdmin || !joined || !localStream || rtcInitRef.current) return
@@ -354,22 +369,28 @@ function MeetingRoomInner() {
 
     const initRTC = async () => {
       console.log('[ADMIN-RTC] Initializing peer connection...')
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      })
+      const pc = new RTCPeerConnection(iceConfig)
       peerRef.current = pc
 
       localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream)
+        console.log(`[ADMIN-RTC] Added track: ${track.kind}`)
       })
 
       pc.ontrack = (e) => {
-        console.log('[ADMIN-RTC] Got remote track from client')
+        console.log(`[ADMIN-RTC] Got remote track: ${e.track.kind}`)
         setRemoteStream(e.streams[0] || new MediaStream([e.track]))
       }
 
       pc.oniceconnectionstatechange = () => {
         console.log(`[ADMIN-RTC] ICE state: ${pc.iceConnectionState}`)
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+          console.warn('[ADMIN-RTC] Connection lost, allowing re-init')
+          peerRef.current?.close()
+          peerRef.current = null
+          rtcInitRef.current = false
+          setRemoteStream(null)
+        }
       }
 
       const offer = await pc.createOffer()
@@ -384,7 +405,7 @@ function MeetingRoomInner() {
             resolve()
           }
         })
-        setTimeout(resolve, 5000)
+        setTimeout(resolve, 8000) // longer timeout for TURN
       })
 
       const desc = pc.localDescription
@@ -397,7 +418,7 @@ function MeetingRoomInner() {
             offer: { type: desc.type, sdp: desc.sdp }
           })
         })
-        console.log('[ADMIN-RTC] Offer sent')
+        console.log('[ADMIN-RTC] Offer sent with ICE candidates')
       }
     }
 
@@ -421,23 +442,28 @@ function MeetingRoomInner() {
 
     const handleOffer = async () => {
       console.log('[CLIENT-RTC] Got offer from admin, creating answer...')
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      })
+      const pc = new RTCPeerConnection(iceConfig)
       peerRef.current = pc
 
-      // Only send VIDEO tracks — no audio capture on client side (preserves AI video audio)
-      localStream.getVideoTracks().forEach(track => {
+      // Send ALL tracks from client to admin
+      localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream)
+        console.log(`[CLIENT-RTC] Added track: ${track.kind}`)
       })
 
       pc.ontrack = (e) => {
-        console.log('[CLIENT-RTC] Got remote track from admin')
+        console.log(`[CLIENT-RTC] Got remote track: ${e.track.kind}`)
         setRemoteStream(e.streams[0] || new MediaStream([e.track]))
       }
 
       pc.oniceconnectionstatechange = () => {
         console.log(`[CLIENT-RTC] ICE state: ${pc.iceConnectionState}`)
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+          console.warn('[CLIENT-RTC] Connection lost')
+          peerRef.current?.close()
+          peerRef.current = null
+          setRemoteStream(null)
+        }
       }
 
       await pc.setRemoteDescription(new RTCSessionDescription(rtcData.offer))
@@ -452,7 +478,7 @@ function MeetingRoomInner() {
             resolve()
           }
         })
-        setTimeout(resolve, 5000)
+        setTimeout(resolve, 8000) // longer timeout for TURN
       })
 
       const desc = pc.localDescription
@@ -465,7 +491,7 @@ function MeetingRoomInner() {
             answer: { type: desc.type, sdp: desc.sdp }
           })
         })
-        console.log('[CLIENT-RTC] Answer sent')
+        console.log('[CLIENT-RTC] Answer sent with ICE candidates')
       }
     }
 
@@ -616,40 +642,47 @@ function MeetingRoomInner() {
   const showClientTile = true // always show self or client placeholder
   const showAdminOnClient = !isAdmin && !!remoteStream // client sees admin tile only when WebRTC stream is live
   const totalTiles = meetingData.participants.length + 1 + (isAdmin ? 1 : 0) + (showAdminOnClient ? 1 : 0)
-  const cols = totalTiles <= 2 ? 2 : totalTiles <= 4 ? 2 : totalTiles <= 6 ? 3 : 4
+  // Responsive: fewer cols on small screens
+  const getResponsiveCols = () => {
+    if (typeof window === 'undefined') return 3
+    const w = window.innerWidth
+    if (w < 640) return totalTiles <= 2 ? 1 : 2 // mobile
+    if (w < 1024) return totalTiles <= 2 ? 2 : 2 // tablet
+    return totalTiles <= 2 ? 2 : totalTiles <= 4 ? 2 : totalTiles <= 6 ? 3 : 4 // desktop
+  }
+  const cols = getResponsiveCols()
 
   return (
-    <div className="h-screen flex flex-col bg-[#201f1f]">
+    <div className="h-screen flex flex-col bg-[#201f1f] overflow-hidden">
       <audio ref={audioElRef} />
 
-      {/* Top bar */}
-      <div className="h-[48px] bg-[#292828] flex items-center px-3 border-b border-[#383838]">
-        <div className="w-[68px] flex items-center justify-center">
-          <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none">
+      {/* Top bar — responsive */}
+      <div className="h-[44px] sm:h-[48px] bg-[#292828] flex items-center px-2 sm:px-3 border-b border-[#383838]">
+        <div className="w-[40px] sm:w-[68px] flex items-center justify-center">
+          <svg viewBox="0 0 24 24" className="w-5 h-5 sm:w-6 sm:h-6" fill="none">
             <path d="M20.5 6h-3.5V4.5A1.5 1.5 0 0015.5 3h-7A1.5 1.5 0 007 4.5V6H3.5A1.5 1.5 0 002 7.5v9A1.5 1.5 0 003.5 18H7v1.5A1.5 1.5 0 008.5 21h7a1.5 1.5 0 001.5-1.5V18h3.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.5 6z" fill="#5b5fc7"/>
             <path d="M9.5 8h5v2h-2v5h-1v-5h-2V8z" fill="white"/>
           </svg>
         </div>
-        <div className="flex-1 flex justify-center items-center gap-3">
-          <span className="text-[13px] text-gray-300 font-medium">{meetingData.title}</span>
+        <div className="flex-1 flex justify-center items-center gap-2 sm:gap-3 min-w-0">
+          <span className="text-[11px] sm:text-[13px] text-gray-300 font-medium truncate">{meetingData.title}</span>
           {isAdmin && (
-            <span className="text-[10px] bg-indigo-600/30 text-indigo-300 px-2 py-0.5 rounded-full font-bold">ADMIN</span>
+            <span className="text-[9px] sm:text-[10px] bg-indigo-600/30 text-indigo-300 px-1.5 sm:px-2 py-0.5 rounded-full font-bold flex-shrink-0">ADMIN</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          {/* Live status indicators */}
+        <div className="flex items-center gap-1 sm:gap-2">
           {isAdmin && (
-            <div className="flex items-center gap-2 mr-2">
-              <div className={`flex items-center gap-1 text-[10px] ${meetingState.clientJoined ? 'text-green-400' : 'text-gray-600'}`}>
+            <div className="flex items-center gap-1 sm:gap-2 mr-1 sm:mr-2">
+              <div className={`flex items-center gap-1 text-[9px] sm:text-[10px] ${meetingState.clientJoined ? 'text-green-400' : 'text-gray-600'}`}>
                 <div className={`w-1.5 h-1.5 rounded-full ${meetingState.clientJoined ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
-                Client
+                <span className="hidden sm:inline">Client</span>
               </div>
             </div>
           )}
           {scenarioStatus && (
-            <span className="text-[11px] text-[#5b5fc7] font-medium">{scenarioStatus}</span>
+            <span className="text-[10px] sm:text-[11px] text-[#5b5fc7] font-medium truncate max-w-[80px] sm:max-w-none">{scenarioStatus}</span>
           )}
-          <MoreHorizontal className="w-5 h-5 text-gray-500 cursor-pointer" />
+          <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5 text-gray-500 cursor-pointer" />
         </div>
       </div>
 
@@ -667,9 +700,9 @@ function MeetingRoomInner() {
         />
 
         <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1 bg-[#201f1f] flex items-center justify-center p-4">
+          <div className="flex-1 bg-[#201f1f] flex items-center justify-center p-1 sm:p-2 md:p-4">
             <div
-              className="grid gap-2 w-full h-full"
+              className="grid gap-1 sm:gap-2 w-full h-full auto-rows-fr"
               style={{
                 gridTemplateColumns: `repeat(${cols}, 1fr)`,
                 maxWidth: totalTiles <= 2 ? '900px' : totalTiles <= 4 ? '1100px' : '100%',
@@ -835,9 +868,9 @@ function MeetingRoomInner() {
             </div>
           </div>
 
-          {/* Side panel */}
+          {/* Side panel — overlay on mobile, sidebar on desktop */}
           {(showChat || showParticipants) && (
-            <div className="w-[320px] bg-[#2d2c2c] border-l border-[#383838] flex flex-col">
+            <div className="absolute right-0 top-[44px] sm:top-[48px] bottom-0 w-full sm:w-[320px] sm:relative sm:top-0 z-30 bg-[#2d2c2c] border-l border-[#383838] flex flex-col">
               <div className="flex items-center justify-between px-4 py-3 border-b border-[#383838]">
                 <h3 className="text-[14px] font-semibold text-white">
                   {showParticipants ? `Participants (${totalTiles})` : 'Conversation'}
