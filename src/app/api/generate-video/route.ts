@@ -136,88 +136,39 @@ export async function POST(request: NextRequest) {
       console.log(`[GEN] Audio padded: +0.8s before, +0.6s after → ${(paddedPcm.length / PCM_RATE / 2).toFixed(1)}s total`)
     }
 
-    // Step 2: Generate video via OmniHuman 1.5 (with retry)
-    const MAX_RETRIES = 2
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      console.log(`[GEN] Step 2: OmniHuman 1.5 (attempt ${attempt + 1})...`)
+    // Step 2: Create prediction on Replicate (returns immediately — no waiting)
+    console.log(`[GEN] Step 2: Creating OmniHuman 1.5 prediction...`)
 
-      const createRes = await fetch('https://api.replicate.com/v1/models/bytedance/omni-human-1.5/predictions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${REPLICATE_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          input: { image: photoBase64, audio: audioB64, prompt: videoPrompt },
-        }),
-      })
+    const createRes = await fetch('https://api.replicate.com/v1/models/bytedance/omni-human-1.5/predictions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${REPLICATE_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        input: { image: photoBase64, audio: audioB64, prompt: videoPrompt },
+      }),
+    })
 
-      if (!createRes.ok) {
-        const errText = await createRes.text()
-        console.error(`[GEN] Replicate create error ${createRes.status}:`, errText.slice(0, 300))
-        if (createRes.status === 402) {
-          return NextResponse.json({ error: 'Crédit Replicate insuffisant. Recharge sur replicate.com/account/billing' }, { status: 402 })
-        }
-        if (attempt < MAX_RETRIES) { await sleep(3000); continue }
-        return NextResponse.json({ error: `Replicate error ${createRes.status}: ${errText.slice(0, 150)}` }, { status: 500 })
+    if (!createRes.ok) {
+      const errText = await createRes.text()
+      console.error(`[GEN] Replicate create error ${createRes.status}:`, errText.slice(0, 300))
+      if (createRes.status === 402) {
+        return NextResponse.json({ error: 'Crédit Replicate insuffisant. Recharge sur replicate.com/account/billing' }, { status: 402 })
       }
-
-      const prediction = await createRes.json()
-      console.log(`[GEN] Prediction ${prediction.id} created, polling...`)
-
-      // Poll for completion (max 2h = 1440 polls × 5s)
-      const pollUrl = prediction.urls?.get || `https://api.replicate.com/v1/predictions/${prediction.id}`
-      let failed = false
-      for (let i = 0; i < 1440; i++) {
-        await sleep(5000)
-        const pollRes = await fetch(pollUrl, {
-          headers: { 'Authorization': `Bearer ${REPLICATE_TOKEN}` },
-        })
-        const status = await pollRes.json()
-
-        if (status.status === 'succeeded') {
-          const outputUrl = Array.isArray(status.output) ? status.output[0] : status.output
-          console.log(`[GEN] Video ready! Downloading...`)
-
-          const videoRes = await fetch(outputUrl)
-          const videoBuffer = Buffer.from(await videoRes.arrayBuffer())
-
-          const fname = filename || `gen-${Date.now()}.mp4`
-          const outDir = path.join(process.cwd(), 'public', 'videos-generated')
-          if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
-          const outPath = path.join(outDir, fname)
-          fs.writeFileSync(outPath, videoBuffer)
-
-          console.log(`[GEN] Saved: ${fname} (${(videoBuffer.length / 1024 / 1024).toFixed(1)} MB)`)
-          return NextResponse.json({
-            success: true,
-            videoUrl: `/videos-generated/${fname}`,
-            size: videoBuffer.length,
-            predictionId: prediction.id,
-          })
-        }
-
-        if (status.status === 'failed' || status.status === 'canceled') {
-          console.error(`[GEN] Failed (attempt ${attempt + 1}):`, status.error)
-          failed = true
-          break
-        }
-
-        if (i % 6 === 0) console.log(`[GEN] Poll ${i}: ${status.status}`)
-      }
-
-      if (failed && attempt < MAX_RETRIES) {
-        console.log(`[GEN] Retrying...`)
-        await sleep(3000)
-        continue
-      }
-
-      if (failed) {
-        return NextResponse.json({ error: 'Génération échouée après plusieurs tentatives. Vérifie ton crédit Replicate et la taille de l\'image.' }, { status: 500 })
-      }
+      return NextResponse.json({ error: `Replicate error ${createRes.status}: ${errText.slice(0, 150)}` }, { status: 500 })
     }
 
-    return NextResponse.json({ error: 'Timeout waiting for video generation' }, { status: 504 })
+    const prediction = await createRes.json()
+    console.log(`[GEN] Prediction ${prediction.id} created — returning immediately`)
+
+    // Return prediction ID immediately — frontend will poll via /api/check-prediction
+    return NextResponse.json({
+      success: true,
+      predictionId: prediction.id,
+      status: 'starting',
+      filename: filename || `gen-${Date.now()}.mp4`,
+    })
   } catch (err: any) {
     console.error('[GEN] Error:', err)
     return NextResponse.json({ error: err.message }, { status: 500 })

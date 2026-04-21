@@ -129,6 +129,34 @@ export default function ScenarioBuilder() {
     setLines(prev => prev.map(l => l.caseId === id ? { ...l, caseId: cases[0].id } : l))
   }
 
+  // Helper: poll a Replicate prediction until done (each poll is fast — avoids Railway timeout)
+  const pollPrediction = async (
+    predictionId: string,
+    filename: string,
+    onProgress?: (msg: string) => void
+  ): Promise<{ status: string; videoUrl?: string; error?: string }> => {
+    const MAX_POLLS = 720 // 720 × 5s = 1h max
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise(r => setTimeout(r, 5000))
+      try {
+        const res = await fetch(`/api/check-prediction?id=${predictionId}&filename=${encodeURIComponent(filename)}`)
+        const data = await res.json()
+        if (data.status === 'succeeded') {
+          return { status: 'succeeded', videoUrl: data.videoUrl }
+        }
+        if (data.status === 'failed') {
+          return { status: 'failed', error: data.error }
+        }
+        if (onProgress && i % 3 === 0) {
+          onProgress(`${data.status}... (${i * 5}s)`)
+        }
+      } catch {
+        // Network hiccup — continue polling
+      }
+    }
+    return { status: 'failed', error: 'Timeout (1h)' }
+  }
+
   // Generate everything — 3-phase continuous video approach
   const handleGenerateAll = useCallback(async () => {
     // Validate
@@ -295,26 +323,35 @@ export default function ScenarioBuilder() {
             setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length}...`, log })
 
             try {
-              const controller = new AbortController()
-              const timeout = setTimeout(() => controller.abort(), 2 * 60 * 60 * 1000) // 2h timeout
+              const chunkFilename = `chunk-${pid}-${ci}-${Date.now()}.mp4`
+              // Step A: Create prediction (fast, returns immediately)
               const vRes = await fetch('/api/generate-video', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                signal: controller.signal,
                 body: JSON.stringify({
                   audioPath: chunk.wavPath,
                   photoPath: c.photoPath,
                   prompt: VIDEO_PROMPT,
-                  filename: `chunk-${pid}-${ci}-${Date.now()}.mp4`,
+                  filename: chunkFilename,
                 }),
               })
-              clearTimeout(timeout)
               const vData = await vRes.json()
-              if (vData.success) {
-                chunkVideoPaths.push(vData.videoUrl)
-                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} OK (${(vData.size / 1024 / 1024).toFixed(1)} MB)`)
+              if (!vData.success || !vData.predictionId) {
+                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR creation - ${vData.error}`)
+                allChunksOk = false
+                break
+              }
+              addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} prediction ${vData.predictionId} creee, attente...`)
+
+              // Step B: Poll for completion
+              const pollResult = await pollPrediction(vData.predictionId, chunkFilename, (msg: string) => {
+                setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length} - ${msg}` } : null)
+              })
+              if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+                chunkVideoPaths.push(pollResult.videoUrl)
+                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} OK`)
               } else {
-                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR - ${vData.error}`)
+                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR - ${pollResult.error || 'echec'}`)
                 allChunksOk = false
                 break
               }
@@ -364,26 +401,34 @@ export default function ScenarioBuilder() {
           addLog(`[VIDEO] ${c.label}: generation video continue (${totalMeetingDuration.toFixed(0)}s)...`)
 
           try {
-            const controller2 = new AbortController()
-            const timeout2 = setTimeout(() => controller2.abort(), 2 * 60 * 60 * 1000) // 2h timeout
+            const shortFilename = `meeting-${pid}-${Date.now()}.mp4`
+            // Step A: Create prediction (fast)
             const vRes = await fetch('/api/generate-video', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              signal: controller2.signal,
               body: JSON.stringify({
                 audioPath: audioTrack,
                 photoPath: c.photoPath,
                 prompt: VIDEO_PROMPT,
-                filename: `meeting-${pid}-${Date.now()}.mp4`,
+                filename: shortFilename,
               }),
             })
-            clearTimeout(timeout2)
             const vData = await vRes.json()
-            if (vData.success) {
-              videoResults[pid] = vData.videoUrl
-              addLog(`[VIDEO] ${c.label}: OK (${(vData.size / 1024 / 1024).toFixed(1)} MB)`)
+            if (!vData.success || !vData.predictionId) {
+              addLog(`[VIDEO] ${c.label}: ERREUR creation - ${vData.error}`)
+              continue
+            }
+            addLog(`[VIDEO] ${c.label}: prediction ${vData.predictionId} creee, attente...`)
+
+            // Step B: Poll for completion
+            const pollResult = await pollPrediction(vData.predictionId, shortFilename, (msg: string) => {
+              setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} - ${msg}` } : null)
+            })
+            if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+              videoResults[pid] = pollResult.videoUrl
+              addLog(`[VIDEO] ${c.label}: OK`)
             } else {
-              addLog(`[VIDEO] ${c.label}: ERREUR - ${vData.error}`)
+              addLog(`[VIDEO] ${c.label}: ERREUR - ${pollResult.error || 'echec'}`)
             }
           } catch (err) {
             addLog(`[VIDEO] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
