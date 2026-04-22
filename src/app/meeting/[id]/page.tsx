@@ -58,6 +58,8 @@ function MeetingRoomInner() {
   const prevClientJoinedRef = useRef(false)
   const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({})
   const [audioBlocked, setAudioBlocked] = useState(false)
+  const [meetingEnded, setMeetingEnded] = useState(false)
+  const meetingEndedRef = useRef(false)
 
   const audioElRef = useRef<HTMLAudioElement>(null)
   const liveVideoRef = useRef<HTMLVideoElement>(null)
@@ -122,20 +124,21 @@ function MeetingRoomInner() {
     return () => clearInterval(t)
   }, [joined])
 
-  // Capture webcam — VIDEO ONLY for both admin and client
-  // Audio capture (getUserMedia audio:true) on Windows/Chrome interferes with ALL tab audio output
-  // Mic will be added later via a dedicated "unmute" action if needed
+  // Capture webcam — VIDEO + AUDIO for live discussion after AI scenario
+  // Audio track starts DISABLED (enabled after AI videos finish or user unmutes)
   useEffect(() => {
     if (!joined) return
 
-    navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
+        // Disable audio tracks initially — will be enabled after AI videos finish
+        stream.getAudioTracks().forEach(t => { t.enabled = false })
         localStreamRef.current = stream
         setLocalStream(stream)
         const vid = liveVideoRef.current
         if (vid) {
           vid.srcObject = stream
-          console.log('[CAM] Video-only stream attached')
+          console.log('[CAM] Video+audio stream attached (audio disabled initially)')
         } else {
           setTimeout(() => {
             const v = liveVideoRef.current
@@ -167,8 +170,14 @@ function MeetingRoomInner() {
   }, [isVideoOff, localStream])
 
   // Toggle audio track (mute/unmute) — affects WebRTC outgoing audio
+  // During AI scenario, mic stays muted regardless of toggle
   useEffect(() => {
-    localStream?.getAudioTracks().forEach(t => { t.enabled = !isMuted })
+    if (!meetingEndedRef.current && isMuted) {
+      // During scenario, keep audio disabled
+      localStream?.getAudioTracks().forEach(t => { t.enabled = false })
+    } else {
+      localStream?.getAudioTracks().forEach(t => { t.enabled = !isMuted })
+    }
   }, [isMuted, localStream])
 
   // Timeline ticker — controls which participant's audio is heard
@@ -183,6 +192,9 @@ function MeetingRoomInner() {
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
       setSpeakingId(currentSpeaker)
+
+      // If meeting scenario ended, don't touch AI videos (they're paused)
+      if (meetingEndedRef.current) return
 
       meetingData.participants.forEach(p => {
         const vid = videoRefs.current[p.id]
@@ -221,8 +233,25 @@ function MeetingRoomInner() {
       if (activeSeg) {
         const speaker = meetingData.participants.find(p => p.id === activeSeg.participantId)
         setScenarioStatus(`${speaker?.name || ''} parle...`)
-      } else if (now > meetingData.totalDuration) {
-        setScenarioStatus('A l\'ecoute...')
+      } else if (now > meetingData.totalDuration && !meetingEndedRef.current) {
+        // Meeting scenario just ended — pause all AI videos, enable mic for live discussion
+        meetingEndedRef.current = true
+        setMeetingEnded(true)
+        console.log('[MEETING] Scenario ended — pausing AI videos, enabling mic')
+        meetingData.participants.forEach(p => {
+          const vid = videoRefs.current[p.id]
+          if (vid) {
+            vid.pause()
+            vid.volume = 0
+          }
+        })
+        // Enable mic audio tracks for live discussion
+        localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true })
+        setIsMuted(false)
+        setScenarioStatus('Mode ecoute — discussion en direct')
+      } else if (meetingEndedRef.current) {
+        // Already in listening mode, keep status
+        setScenarioStatus('Mode ecoute — discussion en direct')
       } else {
         setScenarioStatus('')
       }
@@ -395,9 +424,12 @@ function MeetingRoomInner() {
   }, [isAdmin, joined, meetingState.clientJoined, meetingState.startedAt, meetingData, startAllVideos])
 
   // Watchdog: monitor videos every 3s — restart any that are paused/stalled/errored
+  // SKIP when meeting scenario has ended (AI videos are intentionally paused)
   useEffect(() => {
     if (!joined || !meetingData || playStartRef.current === 0) return
     const watchdog = setInterval(() => {
+      // Don't restart AI videos after scenario ended — they're paused intentionally
+      if (meetingEndedRef.current) return
       meetingData.participants.forEach(p => {
         const vid = videoRefs.current[p.id]
         if (!vid) return
@@ -811,14 +843,22 @@ function MeetingRoomInner() {
             </div>
           )}
           {scenarioStatus && (
-            <span className="text-[10px] sm:text-[11px] text-[#5b5fc7] font-medium truncate max-w-[80px] sm:max-w-none">{scenarioStatus}</span>
+            <span className={`text-[10px] sm:text-[11px] font-medium truncate max-w-[100px] sm:max-w-none ${meetingEnded ? 'text-green-400' : 'text-[#5b5fc7]'}`}>{scenarioStatus}</span>
           )}
           <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5 text-gray-500 cursor-pointer" />
         </div>
       </div>
 
+      {/* Meeting ended — listening mode banner */}
+      {meetingEnded && (
+        <div className="w-full bg-green-700/90 text-white text-sm font-medium py-2 px-4 flex items-center justify-center gap-2">
+          <Mic className="w-4 h-4" />
+          Scenario termine — Discussion en direct avec le client
+        </div>
+      )}
+
       {/* Audio blocked banner — click to unmute */}
-      {audioBlocked && (
+      {audioBlocked && !meetingEnded && (
         <button
           onClick={() => {
             // User gesture: unmute all videos
@@ -889,6 +929,13 @@ function MeetingRoomInner() {
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#1a1a1a]/80">
                         <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
                         <span className="text-[11px] text-gray-400 mt-2">Chargement...</span>
+                      </div>
+                    )}
+
+                    {/* Meeting ended: listening mode overlay */}
+                    {meetingEnded && (
+                      <div className="absolute top-2 right-2 z-20 bg-black/60 rounded-full px-2 py-0.5">
+                        <span className="text-[9px] text-green-400 font-medium">A l&apos;ecoute</span>
                       </div>
                     )}
 
