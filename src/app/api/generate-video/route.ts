@@ -106,8 +106,9 @@ export async function POST(request: NextRequest) {
       audioB64 = `data:audio/wav;base64,${audioBuf.toString('base64')}`
       console.log(`[GEN] Step 1: Pre-built audio loaded from ${audioPath} (${(audioBuf.length / 1024).toFixed(0)} KB)`)
     } else if (silent) {
-      console.log(`[GEN] Step 1: Silent audio (idle mode)`)
-      audioB64 = generateSilentAudio(10)
+      const silDur = body.silentDuration || 10
+      console.log(`[GEN] Step 1: Silent audio (idle mode, ${silDur}s)`)
+      audioB64 = generateSilentAudio(silDur)
     } else {
       if (!text || !voiceId) {
         return NextResponse.json({ error: 'Missing text or voiceId for talk mode' }, { status: 400 })

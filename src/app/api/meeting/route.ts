@@ -8,7 +8,7 @@ export interface MeetingData {
   title: string
   createdAt: number
   adminKey: string
-  participants: { id: string; name: string; color: string; videoUrl: string }[]
+  participants: { id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string }[]
   timeline: { participantId: string; startTime: number; endTime: number }[]
   totalDuration: number
   state: {

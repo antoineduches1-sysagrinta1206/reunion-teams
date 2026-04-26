@@ -45,6 +45,7 @@ export default function ScenarioBuilder() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [scenarioReady, setScenarioReady] = useState(false)
   const [participantVideos, setParticipantVideos] = useState<Record<string, string>>({})
+  const [participantIdleVideos, setParticipantIdleVideos] = useState<Record<string, string>>({})
   const [meetingTimeline, setMeetingTimeline] = useState<{ participantId: string; startTime: number; endTime: number }[]>([])
   const [meetingDuration, setMeetingDuration] = useState(0)
   const [launched, setLaunched] = useState(false)
@@ -520,7 +521,7 @@ export default function ScenarioBuilder() {
         }
       }
 
-      // Save results to state
+      // Save talking video results
       setParticipantVideos(videoResults)
       setMeetingTimeline(timeline)
       setMeetingDuration(totalMeetingDuration)
@@ -528,9 +529,74 @@ export default function ScenarioBuilder() {
       const totalGenerated = Object.keys(videoResults).length
       addLog(`[OK] ${totalGenerated} videos continues generees (${totalMeetingDuration.toFixed(1)}s chacune)`)
 
+      // ================================================
+      // PHASE 4: Generate idle/listening videos per participant
+      // Short silent videos (25s) that loop when scenario ends
+      // ================================================
+      const IDLE_PROMPT = 'Continuous uninterrupted webcam shot, head and shoulders framing, fixed camera with no movement. A person is sitting in a live professional video conference call, LISTENING attentively to someone else speaking. CRITICAL: The person\'s mouth MUST remain COMPLETELY CLOSED at ALL times. Absolutely ZERO lip movement, ZERO jaw movement, ZERO mouth opening throughout the ENTIRE video. The lips stay naturally pressed together. The person shows ONLY subtle natural listening body language: slow gentle weight shifts, relaxed varied-interval blinking, very subtle eyebrow raises showing interest, gentle natural head tilts, occasional small nods as if agreeing, soft chest breathing motion, and minor postural micro-adjustments. All movements are slow, smooth, and natural — never robotic or repetitive. The person appears genuinely engaged and attentive, like a real human listening in a meeting. Photorealistic webcam quality, soft natural office lighting, shallow depth of field on background.'
+      const IDLE_DURATION = 25 // seconds — single shot, loops seamlessly
+      const idleResults: Record<string, string> = {}
+
+      addLog(`[IDLE] Generation des videos d'ecoute (${IDLE_DURATION}s chacune)...`)
+
+      for (const pid of Object.keys(videoResults)) {
+        if (cancelledRef.current) break
+        const c = cases.find(cc => cc.id === pid)!
+        addLog(`[IDLE] ${c.label}: generation video idle...`)
+        setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps + Object.keys(videoResults).length, detail: `Phase 4: Video ecoute ${c.label}...`, log })
+
+        try {
+          let idleSuccess = false
+          for (let retry = 0; retry < 3 && !idleSuccess; retry++) {
+            if (cancelledRef.current) break
+            if (retry > 0) {
+              const wait = retry * 10
+              addLog(`[IDLE] ${c.label}: retry ${retry}/3 dans ${wait}s...`)
+              await new Promise(r => setTimeout(r, wait * 1000))
+            }
+
+            const idleFilename = `idle-${pid}-${Date.now()}.mp4`
+            const vRes = await fetch('/api/generate-video', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                photoBase64: c.photoBase64,
+                silent: true,
+                silentDuration: IDLE_DURATION,
+                prompt: IDLE_PROMPT,
+                filename: idleFilename,
+              }),
+            })
+            const vData = await vRes.json()
+            if (!vData.success || !vData.predictionId) {
+              addLog(`[IDLE] ${c.label}: ERREUR creation - ${vData.error || 'unknown'}`)
+              continue
+            }
+            addLog(`[IDLE] ${c.label}: prediction ${vData.predictionId} creee, attente...`)
+
+            const pollResult = await pollPrediction(vData.predictionId, idleFilename, (msg: string) => {
+              setGenStatus(prev => prev ? { ...prev, detail: `Phase 4: ${c.label} ecoute - ${msg}` } : null)
+            })
+            if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+              idleResults[pid] = pollResult.videoUrl
+              addLog(`[IDLE] ${c.label}: OK`)
+              idleSuccess = true
+            } else {
+              addLog(`[IDLE] ${c.label}: ERREUR - ${pollResult.error || 'echec'}`)
+            }
+          }
+        } catch (err) {
+          addLog(`[IDLE] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
+        }
+        currentStep++
+      }
+
+      setParticipantIdleVideos(idleResults)
+      addLog(`[IDLE] ${Object.keys(idleResults).length}/${Object.keys(videoResults).length} videos idle generees`)
+
       setScenarioReady(totalGenerated > 0)
       setIsGenerating(false)
-      setGenStatus({ phase: 'done', current: totalSteps, total: totalSteps, detail: `Pret ! ${totalGenerated} videos continues de ${totalMeetingDuration.toFixed(0)}s`, log })
+      setGenStatus({ phase: 'done', current: totalSteps + Object.keys(videoResults).length, total: totalSteps + Object.keys(videoResults).length, detail: `Pret ! ${totalGenerated} videos + ${Object.keys(idleResults).length} idle`, log })
     } catch (err) {
       addLog(`[COMBINE] ERREUR: ${err instanceof Error ? err.message : 'inconnue'}`)
       setIsGenerating(false)
@@ -547,7 +613,13 @@ export default function ScenarioBuilder() {
     try {
       const participantList = Object.keys(participantVideos).map(pid => {
         const c = cases.find(cc => cc.id === pid)
-        return { id: pid, name: c?.label || pid, color: c?.color || '#5b5fc7', videoUrl: participantVideos[pid] }
+        return {
+          id: pid,
+          name: c?.label || pid,
+          color: c?.color || '#5b5fc7',
+          videoUrl: participantVideos[pid],
+          idleVideoUrl: participantIdleVideos[pid] || undefined,
+        }
       })
 
       const res = await fetch('/api/meeting', {

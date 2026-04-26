@@ -10,6 +10,7 @@ interface MeetingParticipant {
   name: string
   color: string
   videoUrl: string
+  idleVideoUrl?: string
 }
 
 interface TimelineSegment {
@@ -63,6 +64,7 @@ function MeetingRoomInner() {
 
   // Preload: download videos fully into memory (blob URLs) before playback
   const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
+  const [idleBlobUrls, setIdleBlobUrls] = useState<Record<string, string>>({})
   const [preloadProgress, setPreloadProgress] = useState(0) // 0-100
   const [preloadDone, setPreloadDone] = useState(false)
 
@@ -101,64 +103,74 @@ function MeetingRoomInner() {
       })
   }, [meetingId, isAdmin, adminKey])
 
-  // Preload ALL videos into memory as blob URLs — zero network dependency during playback
+  // Preload ALL videos (main + idle) into memory as blob URLs — zero network dependency
   useEffect(() => {
     if (!meetingData || preloadDone) return
     let cancelled = false
 
+    const downloadAsBlob = async (url: string, label: string): Promise<{ blobUrl: string; size: number } | null> => {
+      try {
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const contentLength = Number(res.headers.get('content-length') || 0)
+        const reader = res.body?.getReader()
+        if (!reader) throw new Error('No reader')
+        const chunks: BlobPart[] = []
+        let received = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          chunks.push(value)
+          received += value.length
+        }
+        if (cancelled) return null
+        const blob = new Blob(chunks, { type: 'video/mp4' })
+        return { blobUrl: URL.createObjectURL(blob), size: received }
+      } catch (err: any) {
+        console.error(`[PRELOAD] ${label}: failed — ${err.message}`)
+        return null
+      }
+    }
+
     const preloadAll = async () => {
       const participants = meetingData.participants
-      const total = participants.length
-      if (total === 0) { setPreloadDone(true); setPreloadProgress(100); return }
+      // Count total downloads: main videos + idle videos (if available)
+      const idleCount = participants.filter(p => p.idleVideoUrl).length
+      const totalDownloads = participants.length + idleCount
+      if (totalDownloads === 0) { setPreloadDone(true); setPreloadProgress(100); return }
 
-      const blobMap: Record<string, string> = {}
+      const mainBlobMap: Record<string, string> = {}
+      const idleBlobMap: Record<string, string> = {}
       let loaded = 0
 
+      // Download main videos first (priority)
       await Promise.all(participants.map(async (p) => {
-        try {
-          console.log(`[PRELOAD] Downloading ${p.name}: ${p.videoUrl}`)
-          const res = await fetch(p.videoUrl)
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
-
-          // Track download progress via ReadableStream
-          const contentLength = Number(res.headers.get('content-length') || 0)
-          const reader = res.body?.getReader()
-          if (!reader) throw new Error('No reader')
-
-          const chunks: BlobPart[] = []
-          let received = 0
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            chunks.push(value)
-            received += value.length
-            // Update per-video progress estimate
-            if (contentLength > 0 && !cancelled) {
-              const videoProgress = (received / contentLength) * 100
-              const overallProgress = ((loaded * 100) + videoProgress) / total
-              setPreloadProgress(Math.min(99, Math.round(overallProgress)))
-            }
-          }
-
-          if (cancelled) return
-          const blob = new Blob(chunks, { type: 'video/mp4' })
-          const url = URL.createObjectURL(blob)
-          blobMap[p.id] = url
-          loaded++
-          setPreloadProgress(Math.round((loaded / total) * 100))
-          console.log(`[PRELOAD] ${p.name}: done (${(received / 1024 / 1024).toFixed(1)}MB) — ${loaded}/${total}`)
-        } catch (err: any) {
-          console.error(`[PRELOAD] ${p.name}: failed — ${err.message}, using remote URL`)
-          loaded++
-          setPreloadProgress(Math.round((loaded / total) * 100))
+        const result = await downloadAsBlob(p.videoUrl, `${p.name} (main)`)
+        if (result) {
+          mainBlobMap[p.id] = result.blobUrl
+          console.log(`[PRELOAD] ${p.name} main: ${(result.size / 1024 / 1024).toFixed(1)}MB`)
         }
+        loaded++
+        if (!cancelled) setPreloadProgress(Math.min(99, Math.round((loaded / totalDownloads) * 100)))
+      }))
+
+      // Then download idle videos
+      await Promise.all(participants.filter(p => p.idleVideoUrl).map(async (p) => {
+        const result = await downloadAsBlob(p.idleVideoUrl!, `${p.name} (idle)`)
+        if (result) {
+          idleBlobMap[p.id] = result.blobUrl
+          console.log(`[PRELOAD] ${p.name} idle: ${(result.size / 1024 / 1024).toFixed(1)}MB`)
+        }
+        loaded++
+        if (!cancelled) setPreloadProgress(Math.min(99, Math.round((loaded / totalDownloads) * 100)))
       }))
 
       if (!cancelled) {
-        setVideoBlobUrls(blobMap)
+        setVideoBlobUrls(mainBlobMap)
+        setIdleBlobUrls(idleBlobMap)
         setPreloadDone(true)
         setPreloadProgress(100)
-        console.log(`[PRELOAD] All done: ${Object.keys(blobMap).length}/${total} cached in memory`)
+        console.log(`[PRELOAD] All done: ${Object.keys(mainBlobMap).length} main + ${Object.keys(idleBlobMap).length} idle cached`)
       }
     }
 
@@ -169,11 +181,10 @@ function MeetingRoomInner() {
   // Cleanup blob URLs on unmount
   useEffect(() => {
     return () => {
-      Object.values(videoBlobUrls).forEach(url => {
-        try { URL.revokeObjectURL(url) } catch {}
-      })
+      Object.values(videoBlobUrls).forEach(url => { try { URL.revokeObjectURL(url) } catch {} })
+      Object.values(idleBlobUrls).forEach(url => { try { URL.revokeObjectURL(url) } catch {} })
     }
-  }, [videoBlobUrls])
+  }, [videoBlobUrls, idleBlobUrls])
 
   // Poll meeting state every 2s (for admin to see when client joins, and vice versa)
   useEffect(() => {
@@ -328,16 +339,25 @@ function MeetingRoomInner() {
         const speaker = meetingData.participants.find(p => p.id === activeSeg.participantId)
         setScenarioStatus(`${speaker?.name || ''} parle...`)
       } else if (now > meetingData.totalDuration && !meetingEndedRef.current) {
-        // Meeting scenario ended — mute AI videos, disable loop, enable mic
-        // DON'T pause: let videos play to natural end so avatars look natural
+        // Meeting scenario ended — switch to idle videos, enable mic for live discussion
         meetingEndedRef.current = true
         setMeetingEnded(true)
-        console.log('[MEETING] Scenario ended — muting AI videos, enabling mic')
+        console.log('[MEETING] Scenario ended — switching to idle videos, enabling mic')
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
-          if (vid) {
-            vid.volume = 0
-            vid.loop = false // stop looping — video will end naturally on last frame
+          if (!vid) return
+          vid.volume = 0
+          // Switch to idle video if available (pre-loaded blob URL)
+          const idleUrl = idleBlobUrls[p.id]
+          if (idleUrl) {
+            vid.loop = true  // idle video loops forever
+            vid.src = idleUrl
+            vid.load()
+            vid.play().catch(() => {})
+            console.log(`[MEETING] ${p.name}: switched to idle video (loop)`)
+          } else {
+            vid.loop = false // no idle video — freeze on last frame
+            console.log(`[MEETING] ${p.name}: no idle video, will freeze naturally`)
           }
         })
         // Enable mic audio tracks for live discussion
@@ -516,17 +536,24 @@ function MeetingRoomInner() {
 
   // Watchdog: monitor videos every 3s
   // During scenario: restart paused/stalled/errored videos, preserve sync
-  // After scenario: FORCE volume=0 + loop=false (safety net — AI must NEVER speak)
+  // After scenario: FORCE volume=0 (AI must NEVER speak), keep idle videos playing
   useEffect(() => {
     if (!joined || !meetingData || playStartRef.current === 0) return
     const watchdog = setInterval(() => {
       if (meetingEndedRef.current) {
-        // SAFETY NET: force all AI videos silent + no loop (belt-and-suspenders)
+        // SAFETY NET: force all AI videos silent
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
           if (!vid) return
           if (vid.volume > 0) { vid.volume = 0; console.warn(`[WATCHDOG] Force-muted ${p.name}`) }
-          if (vid.loop) { vid.loop = false }
+          // If idle video is playing, keep it looping + restart if paused
+          if (idleBlobUrls[p.id]) {
+            if (!vid.loop) vid.loop = true
+            if (vid.paused && vid.readyState >= 2) {
+              vid.play().catch(() => {})
+              console.log(`[WATCHDOG] ${p.name}: restarted idle video`)
+            }
+          }
         })
         return
       }
@@ -884,8 +911,8 @@ function MeetingRoomInner() {
             {isAdmin ? ' — Vous etes l\'admin' : ' + vous'}
           </p>
 
-          {/* Video preload progress bar */}
-          {!preloadDone && (
+          {/* Video preload progress bar — admin only, client sees nothing */}
+          {!preloadDone && isAdmin && (
             <div className="w-full max-w-[280px]">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[11px] text-gray-400">Preparation de la reunion...</span>
@@ -1037,7 +1064,7 @@ function MeetingRoomInner() {
                       src={videoBlobUrls[p.id] || p.videoUrl}
                       preload="auto"
                       playsInline
-                      loop={!meetingEnded}
+                      loop={!meetingEnded || !!idleBlobUrls[p.id]}
                       crossOrigin="anonymous"
                       className="absolute inset-0 w-full h-full object-cover"
                     />
