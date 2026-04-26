@@ -243,24 +243,24 @@ function MeetingRoomInner() {
         const speaker = meetingData.participants.find(p => p.id === activeSeg.participantId)
         setScenarioStatus(`${speaker?.name || ''} parle...`)
       } else if (now > meetingData.totalDuration && !meetingEndedRef.current) {
-        // Meeting scenario just ended — pause all AI videos, enable mic for live discussion
+        // Meeting scenario ended — mute AI videos, disable loop, enable mic
+        // DON'T pause: let videos play to natural end so avatars look natural
         meetingEndedRef.current = true
         setMeetingEnded(true)
-        console.log('[MEETING] Scenario ended — pausing AI videos, enabling mic')
+        console.log('[MEETING] Scenario ended — muting AI videos, enabling mic')
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
           if (vid) {
-            vid.pause()
             vid.volume = 0
+            vid.loop = false // stop looping — video will end naturally on last frame
           }
         })
         // Enable mic audio tracks for live discussion
         localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true })
         setIsMuted(false)
-        setScenarioStatus('Mode ecoute — discussion en direct')
+        setScenarioStatus('') // No visible status — keep it natural
       } else if (meetingEndedRef.current) {
-        // Already in listening mode, keep status
-        setScenarioStatus('Mode ecoute — discussion en direct')
+        setScenarioStatus('') // Stay silent — no indication
       } else {
         setScenarioStatus('')
       }
@@ -838,22 +838,14 @@ function MeetingRoomInner() {
             </div>
           )}
           {scenarioStatus && (
-            <span className={`text-[10px] sm:text-[11px] font-medium truncate max-w-[100px] sm:max-w-none ${meetingEnded ? 'text-green-400' : 'text-[#5b5fc7]'}`}>{scenarioStatus}</span>
+            <span className="text-[10px] sm:text-[11px] text-[#5b5fc7] font-medium truncate max-w-[100px] sm:max-w-none">{scenarioStatus}</span>
           )}
           <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5 text-gray-500 cursor-pointer" />
         </div>
       </div>
 
-      {/* Meeting ended — listening mode banner */}
-      {meetingEnded && (
-        <div className="w-full bg-green-700/90 text-white text-sm font-medium py-2 px-4 flex items-center justify-center gap-2">
-          <Mic className="w-4 h-4" />
-          Scenario termine — Discussion en direct avec le client
-        </div>
-      )}
-
       {/* Audio blocked banner — click to unmute */}
-      {audioBlocked && !meetingEnded && (
+      {audioBlocked && (
         <button
           onClick={() => {
             // User gesture: unmute all videos
@@ -900,7 +892,7 @@ function MeetingRoomInner() {
             >
               {/* AI Participants — continuous videos */}
               {meetingData.participants.map((p) => {
-                const isSpeaking = speakingId === p.id
+                const isSpeaking = meetingEnded ? false : speakingId === p.id
                 return (
                   <div
                     key={p.id}
@@ -914,7 +906,7 @@ function MeetingRoomInner() {
                       src={p.videoUrl}
                       preload="auto"
                       playsInline
-                      loop
+                      loop={!meetingEnded}
                       crossOrigin="anonymous"
                       className="absolute inset-0 w-full h-full object-cover"
                     />
@@ -924,13 +916,6 @@ function MeetingRoomInner() {
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#1a1a1a]/80">
                         <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
                         <span className="text-[11px] text-gray-400 mt-2">Chargement...</span>
-                      </div>
-                    )}
-
-                    {/* Meeting ended: listening mode overlay */}
-                    {meetingEnded && (
-                      <div className="absolute top-2 right-2 z-20 bg-black/60 rounded-full px-2 py-0.5">
-                        <span className="text-[9px] text-green-400 font-medium">A l&apos;ecoute</span>
                       </div>
                     )}
 
