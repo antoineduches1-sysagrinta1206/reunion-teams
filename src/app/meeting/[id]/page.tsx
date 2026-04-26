@@ -71,6 +71,7 @@ function MeetingRoomInner() {
   const audioElRef = useRef<HTMLAudioElement>(null)
   const liveVideoRef = useRef<HTMLVideoElement>(null)
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
+  const idleVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
   const playStartRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -356,25 +357,27 @@ function MeetingRoomInner() {
         const speaker = meetingData.participants.find(p => p.id === activeSeg.participantId)
         setScenarioStatus(`${speaker?.name || ''} parle...`)
       } else if (now > meetingData.totalDuration && !meetingEndedRef.current) {
-        // Meeting scenario ended — switch to idle videos, enable mic for live discussion
+        // Meeting scenario ended — crossfade to idle videos, enable mic for live discussion
         meetingEndedRef.current = true
         setMeetingEnded(true)
-        console.log('[MEETING] Scenario ended — switching to idle videos, enabling mic')
+        console.log('[MEETING] Scenario ended — crossfading to idle videos, enabling mic')
         meetingData.participants.forEach(p => {
-          const vid = videoRefs.current[p.id]
-          if (!vid) return
-          vid.volume = 0
-          // Switch to idle video if available (pre-loaded blob URL)
-          const idleUrl = idleBlobUrls[p.id]
-          if (idleUrl) {
-            vid.loop = true  // idle video loops forever
-            vid.src = idleUrl
-            vid.load()
-            vid.play().catch(() => {})
-            console.log(`[MEETING] ${p.name}: switched to idle video (loop)`)
+          const mainVid = videoRefs.current[p.id]
+          const idleVid = idleVideoRefs.current[p.id]
+          if (mainVid) {
+            mainVid.volume = 0
+            mainVid.loop = false // main video stops at last frame (will be hidden by crossfade)
+          }
+          // Start playing idle video (preloaded, hidden behind main with opacity 0)
+          if (idleVid) {
+            idleVid.volume = 0
+            idleVid.muted = true
+            idleVid.loop = true
+            idleVid.currentTime = 0
+            idleVid.play().catch(() => {})
+            console.log(`[MEETING] ${p.name}: idle video started (crossfading in)`)
           } else {
-            vid.loop = false // no idle video — freeze on last frame
-            console.log(`[MEETING] ${p.name}: no idle video, will freeze naturally`)
+            console.log(`[MEETING] ${p.name}: no idle video — main will freeze on last frame`)
           }
         })
         // Enable mic audio tracks for live discussion
@@ -558,16 +561,16 @@ function MeetingRoomInner() {
     if (!joined || !meetingData || playStartRef.current === 0) return
     const watchdog = setInterval(() => {
       if (meetingEndedRef.current) {
-        // SAFETY NET: force all AI videos silent
+        // SAFETY NET: force all AI videos silent + keep idle videos looping
         meetingData.participants.forEach(p => {
-          const vid = videoRefs.current[p.id]
-          if (!vid) return
-          if (vid.volume > 0) { vid.volume = 0; console.warn(`[WATCHDOG] Force-muted ${p.name}`) }
-          // If idle video is playing, keep it looping + restart if paused
-          if (idleBlobUrls[p.id]) {
-            if (!vid.loop) vid.loop = true
-            if (vid.paused && vid.readyState >= 2) {
-              vid.play().catch(() => {})
+          const mainVid = videoRefs.current[p.id]
+          const idleVid = idleVideoRefs.current[p.id]
+          if (mainVid && mainVid.volume > 0) { mainVid.volume = 0; console.warn(`[WATCHDOG] Force-muted ${p.name} main`) }
+          if (idleVid) {
+            if (idleVid.volume > 0) idleVid.volume = 0
+            if (!idleVid.loop) idleVid.loop = true
+            if (idleVid.paused && idleVid.readyState >= 2) {
+              idleVid.play().catch(() => {})
               console.log(`[WATCHDOG] ${p.name}: restarted idle video`)
             }
           }
@@ -1157,15 +1160,31 @@ function MeetingRoomInner() {
                     }`}
                     style={{ backgroundColor: '#1a1a1a', aspectRatio: '16/9' }}
                   >
+                    {/* Main scenario video (stays visible during scenario, fades out at end) */}
                     <video
                       ref={el => { videoRefs.current[p.id] = el }}
                       src={videoBlobUrls[p.id] || p.videoUrl}
                       preload="auto"
                       playsInline
-                      loop={!meetingEnded || !!idleBlobUrls[p.id]}
+                      loop={!meetingEnded}
                       crossOrigin="anonymous"
-                      className="absolute inset-0 w-full h-full object-cover"
+                      className="absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-in-out"
+                      style={{ opacity: meetingEnded && idleBlobUrls[p.id] ? 0 : 1 }}
                     />
+                    {/* Idle video — preloaded, stacked on top, fades in when scenario ends */}
+                    {idleBlobUrls[p.id] && (
+                      <video
+                        ref={el => { idleVideoRefs.current[p.id] = el }}
+                        src={idleBlobUrls[p.id]}
+                        preload="auto"
+                        playsInline
+                        muted
+                        loop
+                        crossOrigin="anonymous"
+                        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-in-out"
+                        style={{ opacity: meetingEnded ? 1 : 0, pointerEvents: 'none' }}
+                      />
+                    )}
 
                     {/* Loading overlay */}
                     {videoLoading[p.id] && (
