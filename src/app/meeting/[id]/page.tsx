@@ -61,6 +61,11 @@ function MeetingRoomInner() {
   const [meetingEnded, setMeetingEnded] = useState(false)
   const meetingEndedRef = useRef(false)
 
+  // Preload: download videos fully into memory (blob URLs) before playback
+  const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
+  const [preloadProgress, setPreloadProgress] = useState(0) // 0-100
+  const [preloadDone, setPreloadDone] = useState(false)
+
   const audioElRef = useRef<HTMLAudioElement>(null)
   const liveVideoRef = useRef<HTMLVideoElement>(null)
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
@@ -95,6 +100,80 @@ function MeetingRoomInner() {
         setLoading(false)
       })
   }, [meetingId, isAdmin, adminKey])
+
+  // Preload ALL videos into memory as blob URLs — zero network dependency during playback
+  useEffect(() => {
+    if (!meetingData || preloadDone) return
+    let cancelled = false
+
+    const preloadAll = async () => {
+      const participants = meetingData.participants
+      const total = participants.length
+      if (total === 0) { setPreloadDone(true); setPreloadProgress(100); return }
+
+      const blobMap: Record<string, string> = {}
+      let loaded = 0
+
+      await Promise.all(participants.map(async (p) => {
+        try {
+          console.log(`[PRELOAD] Downloading ${p.name}: ${p.videoUrl}`)
+          const res = await fetch(p.videoUrl)
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+          // Track download progress via ReadableStream
+          const contentLength = Number(res.headers.get('content-length') || 0)
+          const reader = res.body?.getReader()
+          if (!reader) throw new Error('No reader')
+
+          const chunks: BlobPart[] = []
+          let received = 0
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            chunks.push(value)
+            received += value.length
+            // Update per-video progress estimate
+            if (contentLength > 0 && !cancelled) {
+              const videoProgress = (received / contentLength) * 100
+              const overallProgress = ((loaded * 100) + videoProgress) / total
+              setPreloadProgress(Math.min(99, Math.round(overallProgress)))
+            }
+          }
+
+          if (cancelled) return
+          const blob = new Blob(chunks, { type: 'video/mp4' })
+          const url = URL.createObjectURL(blob)
+          blobMap[p.id] = url
+          loaded++
+          setPreloadProgress(Math.round((loaded / total) * 100))
+          console.log(`[PRELOAD] ${p.name}: done (${(received / 1024 / 1024).toFixed(1)}MB) — ${loaded}/${total}`)
+        } catch (err: any) {
+          console.error(`[PRELOAD] ${p.name}: failed — ${err.message}, using remote URL`)
+          loaded++
+          setPreloadProgress(Math.round((loaded / total) * 100))
+        }
+      }))
+
+      if (!cancelled) {
+        setVideoBlobUrls(blobMap)
+        setPreloadDone(true)
+        setPreloadProgress(100)
+        console.log(`[PRELOAD] All done: ${Object.keys(blobMap).length}/${total} cached in memory`)
+      }
+    }
+
+    preloadAll()
+    return () => { cancelled = true }
+  }, [meetingData, preloadDone])
+
+  // Cleanup blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(videoBlobUrls).forEach(url => {
+        try { URL.revokeObjectURL(url) } catch {}
+      })
+    }
+  }, [videoBlobUrls])
 
   // Poll meeting state every 2s (for admin to see when client joins, and vice versa)
   useEffect(() => {
@@ -276,50 +355,47 @@ function MeetingRoomInner() {
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [joined, meetingData])
 
-  // Start all videos — uses volume=0 instead of muted (avoids browser unmute block)
+  // Start all videos — videos are pre-loaded as blobs, so playback is instant (no network)
   const startAllVideos = useCallback(async (syncToTime?: number) => {
     if (!meetingData) return
     const startOffset = syncToTime || 0
-    console.log(`[PLAY] Starting ${meetingData.participants.length} videos, sync=${startOffset.toFixed(1)}s`)
+    console.log(`[PLAY] Starting ${meetingData.participants.length} videos from memory, sync=${startOffset.toFixed(1)}s`)
 
-    // Mark all videos as loading
+    // Mark all videos as loading briefly
     const loadingState: Record<string, boolean> = {}
     meetingData.participants.forEach(p => { loadingState[p.id] = true })
     setVideoLoading(loadingState)
 
-    // Start each video independently (don't wait for all — slow connection friendly)
     const startSingleVideo = async (p: MeetingParticipant, retryCount = 0): Promise<void> => {
       const vid = videoRefs.current[p.id]
       if (!vid) return
 
-      // Wait for enough data (up to 30s, not 5s)
+      // Videos are blob URLs (in memory) — should be ready almost instantly
       if (vid.readyState < 2) {
         await new Promise<void>(resolve => {
-          const onReady = () => { vid.removeEventListener('canplaythrough', onReady); vid.removeEventListener('canplay', onReady); resolve() }
+          const onReady = () => { vid.removeEventListener('canplay', onReady); resolve() }
           vid.addEventListener('canplay', onReady)
-          vid.addEventListener('canplaythrough', onReady)
           vid.load()
-          setTimeout(resolve, 30000) // 30s timeout for slow connections
+          setTimeout(resolve, 5000) // 5s is generous for blob URL
         })
       }
 
-      // Sync time
+      // Sync to correct time position
       if (startOffset > 0 && vid.duration > 0) {
         vid.currentTime = startOffset > vid.duration ? startOffset % vid.duration : startOffset
       }
 
-      // Use volume=0 (NOT muted) — this way vid.muted stays false from user gesture
+      // Use volume=0 (NOT muted) — muted toggling blocked by browsers without gesture
       vid.muted = false
       vid.volume = 0
 
       try {
         await vid.play()
-        console.log(`[PLAY] ${p.name}: playing (d=${vid.duration.toFixed(1)}s, ready=${vid.readyState})`)
+        console.log(`[PLAY] ${p.name}: playing from memory (d=${vid.duration.toFixed(1)}s)`)
         setVideoLoading(prev => ({ ...prev, [p.id]: false }))
       } catch (err: any) {
         console.warn(`[PLAY] ${p.name}: play failed (attempt ${retryCount}): ${err.message}`)
-        if (retryCount < 5) {
-          // Retry: if autoplay blocked without muted, fallback to muted then unmute later
+        if (retryCount < 3) {
           if (err.name === 'NotAllowedError') {
             vid.muted = true
             vid.volume = 0
@@ -327,22 +403,22 @@ function MeetingRoomInner() {
               await vid.play()
               console.log(`[PLAY] ${p.name}: playing muted (fallback)`)
               setVideoLoading(prev => ({ ...prev, [p.id]: false }))
-              setAudioBlocked(true) // show "click to enable audio" banner
+              setAudioBlocked(true)
               return
             } catch {}
           }
-          await new Promise(r => setTimeout(r, 2000 * (retryCount + 1)))
+          await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)))
           return startSingleVideo(p, retryCount + 1)
         }
         setVideoLoading(prev => ({ ...prev, [p.id]: false }))
       }
     }
 
-    // Start all in parallel — each independently handles its own loading
+    // Start all in parallel — blob URLs = instant, no buffering
     await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
 
     playStartRef.current = Date.now() - (startOffset * 1000)
-    console.log(`[PLAY] All started, playStartRef=${playStartRef.current}`)
+    console.log(`[PLAY] All started from memory, playStartRef=${playStartRef.current}`)
   }, [meetingData])
 
   // Notify server of join/leave
@@ -734,11 +810,28 @@ function MeetingRoomInner() {
               placeholder="Votre nom..."
               className="w-full max-w-[240px] bg-[#1a1a2e] text-white text-center text-sm rounded-lg px-4 py-2.5 outline-none border border-green-500/30 focus:border-green-400 placeholder-gray-500"
             />
+            {/* Video preload progress for admin urgent join */}
+            {!preloadDone && (
+              <div className="w-full max-w-[240px]">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] text-gray-400">Chargement videos...</span>
+                  <span className="text-[11px] text-green-400 font-medium">{preloadProgress}%</span>
+                </div>
+                <div className="w-full h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+                  <div className="h-full bg-green-500 rounded-full transition-all duration-300" style={{ width: `${preloadProgress}%` }} />
+                </div>
+              </div>
+            )}
             <button
               onClick={handleJoin}
-              className="bg-green-600 hover:bg-green-700 text-white font-bold px-12 py-4 rounded-xl text-lg transition-all shadow-lg shadow-green-600/40 animate-pulse hover:animate-none"
+              disabled={!preloadDone}
+              className={`font-bold px-12 py-4 rounded-xl text-lg transition-all shadow-lg ${
+                !preloadDone
+                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed shadow-none'
+                  : 'bg-green-600 hover:bg-green-700 text-white shadow-green-600/40 animate-pulse hover:animate-none'
+              }`}
             >
-              REJOINDRE EN DIRECT
+              {preloadDone ? 'REJOINDRE EN DIRECT' : 'CHARGEMENT...'}
             </button>
             <p className="text-gray-600 text-[11px]">Vous serez synchronise a la position actuelle du client</p>
           </div>
@@ -791,6 +884,22 @@ function MeetingRoomInner() {
             {isAdmin ? ' — Vous etes l\'admin' : ' + vous'}
           </p>
 
+          {/* Video preload progress bar */}
+          {!preloadDone && (
+            <div className="w-full max-w-[280px]">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] text-gray-400">Preparation de la reunion...</span>
+                <span className="text-[11px] text-[#5b5fc7] font-medium">{preloadProgress}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#5b5fc7] rounded-full transition-all duration-300"
+                  style={{ width: `${preloadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           <input
             type="text"
             value={displayName}
@@ -801,10 +910,13 @@ function MeetingRoomInner() {
 
           <button
             onClick={handleJoin}
+            disabled={!preloadDone}
             className={`font-semibold px-10 py-3.5 rounded-lg text-[16px] transition-colors shadow-lg ${
-              isAdmin
-                ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/30'
-                : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-[#5b5fc7]/30'
+              !preloadDone
+                ? 'bg-gray-600 text-gray-400 cursor-not-allowed shadow-none'
+                : isAdmin
+                  ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/30'
+                  : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-[#5b5fc7]/30'
             }`}
           >
             {isAdmin ? 'Rejoindre (Admin)' : 'Rejoindre la reunion'}
@@ -922,7 +1034,7 @@ function MeetingRoomInner() {
                   >
                     <video
                       ref={el => { videoRefs.current[p.id] = el }}
-                      src={p.videoUrl}
+                      src={videoBlobUrls[p.id] || p.videoUrl}
                       preload="auto"
                       playsInline
                       loop={!meetingEnded}
