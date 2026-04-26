@@ -103,16 +103,19 @@ function MeetingRoomInner() {
       })
   }, [meetingId, isAdmin, adminKey])
 
-  // Preload ALL videos (main + idle) into memory as blob URLs — zero network dependency
+  // Preload videos into memory as blob URLs — zero network dependency during playback
+  // STRATEGY: Join button enables as soon as MAIN videos are ready. Idle videos download in background.
+  // Also has a hard timeout: if a main video can't be preloaded in 90s, fall back to streaming (remote URL).
   useEffect(() => {
     if (!meetingData || preloadDone) return
     let cancelled = false
 
-    const downloadAsBlob = async (url: string, label: string): Promise<{ blobUrl: string; size: number } | null> => {
+    const downloadAsBlob = async (url: string, label: string, timeoutMs = 90000): Promise<{ blobUrl: string; size: number } | null> => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
       try {
-        const res = await fetch(url)
+        const res = await fetch(url, { signal: controller.signal })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const contentLength = Number(res.headers.get('content-length') || 0)
         const reader = res.body?.getReader()
         if (!reader) throw new Error('No reader')
         const chunks: BlobPart[] = []
@@ -120,13 +123,16 @@ function MeetingRoomInner() {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
+          if (cancelled) { reader.cancel(); return null }
           chunks.push(value)
           received += value.length
         }
+        clearTimeout(timeoutId)
         if (cancelled) return null
         const blob = new Blob(chunks, { type: 'video/mp4' })
         return { blobUrl: URL.createObjectURL(blob), size: received }
       } catch (err: any) {
+        clearTimeout(timeoutId)
         console.error(`[PRELOAD] ${label}: failed — ${err.message}`)
         return null
       }
@@ -134,44 +140,55 @@ function MeetingRoomInner() {
 
     const preloadAll = async () => {
       const participants = meetingData.participants
-      // Count total downloads: main videos + idle videos (if available)
-      const idleCount = participants.filter(p => p.idleVideoUrl).length
-      const totalDownloads = participants.length + idleCount
-      if (totalDownloads === 0) { setPreloadDone(true); setPreloadProgress(100); return }
+      if (participants.length === 0) { setPreloadDone(true); setPreloadProgress(100); return }
 
       const mainBlobMap: Record<string, string> = {}
-      const idleBlobMap: Record<string, string> = {}
-      let loaded = 0
+      let mainLoaded = 0
+      const total = participants.length
 
-      // Download main videos first (priority)
+      // ============================================
+      // PHASE 1: Download MAIN videos (blocks join button)
+      // ============================================
       await Promise.all(participants.map(async (p) => {
         const result = await downloadAsBlob(p.videoUrl, `${p.name} (main)`)
         if (result) {
           mainBlobMap[p.id] = result.blobUrl
           console.log(`[PRELOAD] ${p.name} main: ${(result.size / 1024 / 1024).toFixed(1)}MB`)
+        } else {
+          console.warn(`[PRELOAD] ${p.name}: using remote URL as fallback`)
         }
-        loaded++
-        if (!cancelled) setPreloadProgress(Math.min(99, Math.round((loaded / totalDownloads) * 100)))
+        mainLoaded++
+        if (!cancelled) setPreloadProgress(Math.min(99, Math.round((mainLoaded / total) * 100)))
       }))
 
-      // Then download idle videos
-      await Promise.all(participants.filter(p => p.idleVideoUrl).map(async (p) => {
-        const result = await downloadAsBlob(p.idleVideoUrl!, `${p.name} (idle)`)
-        if (result) {
+      if (cancelled) return
+
+      // Main videos done — enable join button immediately (even if some failed, fallback to remote URL)
+      setVideoBlobUrls(mainBlobMap)
+      setPreloadDone(true)
+      setPreloadProgress(100)
+      console.log(`[PRELOAD] Main videos done: ${Object.keys(mainBlobMap).length}/${total} cached. Join button enabled.`)
+
+      // ============================================
+      // PHASE 2: Download IDLE videos IN BACKGROUND (non-blocking)
+      // These only play after scenario ends, so we have plenty of time
+      // ============================================
+      const idleBlobMap: Record<string, string> = {}
+      const participantsWithIdle = participants.filter(p => p.idleVideoUrl)
+      if (participantsWithIdle.length === 0) return
+
+      console.log(`[PRELOAD] Starting background idle download (${participantsWithIdle.length} videos)...`)
+      await Promise.all(participantsWithIdle.map(async (p) => {
+        if (cancelled) return
+        const result = await downloadAsBlob(p.idleVideoUrl!, `${p.name} (idle)`, 180000) // 3min timeout
+        if (result && !cancelled) {
           idleBlobMap[p.id] = result.blobUrl
-          console.log(`[PRELOAD] ${p.name} idle: ${(result.size / 1024 / 1024).toFixed(1)}MB`)
+          console.log(`[PRELOAD] ${p.name} idle: ${(result.size / 1024 / 1024).toFixed(1)}MB (background)`)
+          // Update state progressively as each idle arrives
+          setIdleBlobUrls(prev => ({ ...prev, [p.id]: result.blobUrl }))
         }
-        loaded++
-        if (!cancelled) setPreloadProgress(Math.min(99, Math.round((loaded / totalDownloads) * 100)))
       }))
-
-      if (!cancelled) {
-        setVideoBlobUrls(mainBlobMap)
-        setIdleBlobUrls(idleBlobMap)
-        setPreloadDone(true)
-        setPreloadProgress(100)
-        console.log(`[PRELOAD] All done: ${Object.keys(mainBlobMap).length} main + ${Object.keys(idleBlobMap).length} idle cached`)
-      }
+      console.log(`[PRELOAD] Idle videos background done: ${Object.keys(idleBlobMap).length}/${participantsWithIdle.length}`)
     }
 
     preloadAll()
