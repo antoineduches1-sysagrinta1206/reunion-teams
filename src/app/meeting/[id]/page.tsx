@@ -202,8 +202,14 @@ function MeetingRoomInner() {
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
       setSpeakingId(currentSpeaker)
 
-      // If meeting scenario ended, don't touch AI videos (they're paused)
-      if (meetingEndedRef.current) return
+      // After scenario: enforce silence on EVERY tick (100ms safety net)
+      if (meetingEndedRef.current) {
+        meetingData.participants.forEach(p => {
+          const vid = videoRefs.current[p.id]
+          if (vid && vid.volume > 0) vid.volume = 0
+        })
+        return
+      }
 
       meetingData.participants.forEach(p => {
         const vid = videoRefs.current[p.id]
@@ -432,13 +438,22 @@ function MeetingRoomInner() {
     }
   }, [isAdmin, joined, meetingState.clientJoined, meetingState.startedAt, meetingData, startAllVideos])
 
-  // Watchdog: monitor videos every 3s — restart any that are paused/stalled/errored
-  // SKIP when meeting scenario has ended (AI videos are intentionally paused)
+  // Watchdog: monitor videos every 3s
+  // During scenario: restart paused/stalled/errored videos, preserve sync
+  // After scenario: FORCE volume=0 + loop=false (safety net — AI must NEVER speak)
   useEffect(() => {
     if (!joined || !meetingData || playStartRef.current === 0) return
     const watchdog = setInterval(() => {
-      // Don't restart AI videos after scenario ended — they're paused intentionally
-      if (meetingEndedRef.current) return
+      if (meetingEndedRef.current) {
+        // SAFETY NET: force all AI videos silent + no loop (belt-and-suspenders)
+        meetingData.participants.forEach(p => {
+          const vid = videoRefs.current[p.id]
+          if (!vid) return
+          if (vid.volume > 0) { vid.volume = 0; console.warn(`[WATCHDOG] Force-muted ${p.name}`) }
+          if (vid.loop) { vid.loop = false }
+        })
+        return
+      }
       meetingData.participants.forEach(p => {
         const vid = videoRefs.current[p.id]
         if (!vid) return
@@ -447,16 +462,20 @@ function MeetingRoomInner() {
           console.warn(`[WATCHDOG] ${p.name}: paused, restarting...`)
           vid.play().catch(() => {})
         }
-        // Reload errored videos
+        // Reload errored videos — preserve currentTime for audio sync
         if (vid.error) {
           console.warn(`[WATCHDOG] ${p.name}: error ${vid.error.code}, reloading...`)
+          const savedTime = vid.currentTime
           const src = vid.src
           vid.src = ''
           vid.src = src
           vid.load()
-          setTimeout(() => { vid.play().catch(() => {}) }, 2000)
+          setTimeout(() => {
+            if (savedTime > 0 && vid.duration > 0) vid.currentTime = Math.min(savedTime, vid.duration)
+            vid.play().catch(() => {})
+          }, 2000)
         }
-        // Handle stalled (buffering) — if currentTime hasn't changed in 6s
+        // Handle stalled (buffering)
         if (vid.readyState < 2 && !vid.paused) {
           console.warn(`[WATCHDOG] ${p.name}: buffering (readyState=${vid.readyState})`)
         }
