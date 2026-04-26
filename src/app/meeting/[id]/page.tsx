@@ -55,7 +55,7 @@ function MeetingRoomInner() {
   const [scenarioStatus, setScenarioStatus] = useState('')
   const [meetingState, setMeetingState] = useState<MeetingState>({ started: false, startedAt: null, clientJoined: false, adminJoined: false })
   const [displayName, setDisplayName] = useState(isAdmin ? 'Admin' : 'Client')
-  const prevClientJoinedRef = useRef(false)
+  const prevClientJoinedRef = useRef(false) // kept for future use
   const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({})
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [meetingEnded, setMeetingEnded] = useState(false)
@@ -71,12 +71,9 @@ function MeetingRoomInner() {
   // WebRTC state for live admin <-> client communication
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
-  const [rtcData, setRtcData] = useState<any>(null)
   const peerRef = useRef<RTCPeerConnection | null>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null)
-  const rtcInitRef = useRef(false)
-  const [rtcReinitCounter, setRtcReinitCounter] = useState(0)
 
   // Fetch meeting data
   useEffect(() => {
@@ -110,7 +107,7 @@ function MeetingRoomInner() {
           if (data.success && data.meeting?.state) {
             setMeetingState(data.meeting.state)
           }
-          if (data.rtc) setRtcData(data.rtc)
+          // RTC signaling handled by dedicated WebRTC effect
         })
         .catch(() => {})
     }, 2000)
@@ -124,29 +121,41 @@ function MeetingRoomInner() {
     return () => clearInterval(t)
   }, [joined])
 
-  // Capture webcam — VIDEO + AUDIO for live discussion after AI scenario
+  // Capture webcam — VIDEO + AUDIO (fallback to video-only if mic denied)
   // Audio track starts DISABLED (enabled after AI videos finish or user unmutes)
   useEffect(() => {
     if (!joined) return
 
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => {
-        // Disable audio tracks initially — will be enabled after AI videos finish
-        stream.getAudioTracks().forEach(t => { t.enabled = false })
-        localStreamRef.current = stream
-        setLocalStream(stream)
-        const vid = liveVideoRef.current
-        if (vid) {
-          vid.srcObject = stream
-          console.log('[CAM] Video+audio stream attached (audio disabled initially)')
-        } else {
-          setTimeout(() => {
-            const v = liveVideoRef.current
-            if (v) { v.srcObject = stream; console.log('[CAM] Stream attached (retry)') }
-          }, 500)
+    const tryCapture = async () => {
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        console.log('[CAM] Got video+audio stream')
+      } catch (e1) {
+        console.warn('[CAM] Audio+video failed, trying video only...', e1)
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+          console.log('[CAM] Got video-only stream (audio denied)')
+        } catch (e2) {
+          console.error('[CAM] getUserMedia failed entirely:', e2)
+          return
         }
-      })
-      .catch(err => console.error('[CAM] getUserMedia failed:', err))
+      }
+      // Disable audio tracks initially — will be enabled after AI videos finish
+      stream.getAudioTracks().forEach(t => { t.enabled = false })
+      localStreamRef.current = stream
+      setLocalStream(stream)
+      const vid = liveVideoRef.current
+      if (vid) {
+        vid.srcObject = stream
+      } else {
+        setTimeout(() => {
+          const v = liveVideoRef.current
+          if (v) { v.srcObject = stream; console.log('[CAM] Stream attached (retry)') }
+        }, 500)
+      }
+    }
+    tryCapture()
 
     return () => {
       localStreamRef.current?.getTracks().forEach(t => t.stop())
@@ -456,212 +465,198 @@ function MeetingRoomInner() {
     return () => clearInterval(watchdog)
   }, [joined, meetingData])
 
-  // Admin: re-initialize WebRTC when client joins (RTC data gets cleared on join)
-  useEffect(() => {
-    if (!isAdmin || !joined || !localStream) return
-    const wasJoined = prevClientJoinedRef.current
-    prevClientJoinedRef.current = meetingState.clientJoined
-    // Client just joined → close old peer + re-init
-    if (meetingState.clientJoined && !wasJoined) {
-      console.log('[ADMIN-RTC] Client joined! Re-initializing WebRTC...')
-      if (peerRef.current) {
-        peerRef.current.close()
-        peerRef.current = null
-      }
-      setRemoteStream(null)
-      rtcInitRef.current = false // allow re-init
-      // Bump counter to force the init useEffect to re-run (refs don't trigger re-renders)
-      setRtcReinitCounter(c => c + 1)
-    }
-  }, [isAdmin, joined, localStream, meetingState.clientJoined])
-
   // ==================== WebRTC: Admin <-> Client live communication ====================
+  // Single self-contained effect — handles entire signaling lifecycle via async polling
 
-  // ICE servers: multiple STUN + free TURN for cross-network connectivity
-  const iceConfig = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      // Free TURN servers from Metered (relay for symmetric NAT)
-      { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
-      { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
-      { urls: 'turn:a.relay.metered.ca:443?transport=tcp', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
-    ]
-  }
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Free TURN servers from Metered (relay for symmetric NAT / cross-network)
+    { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
+    { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
+    { urls: 'turn:a.relay.metered.ca:443?transport=tcp', username: 'e8dd65b92f6b1b4395adbc7c', credential: 'uWdJjTvz6ejPCEqm' },
+  ]
 
-  // Admin: create RTCPeerConnection and send offer after getting local stream
-  // rtcReinitCounter in deps ensures this re-runs when client joins and we need to re-init
   useEffect(() => {
-    if (!isAdmin || !joined || !localStream || rtcInitRef.current) return
-    rtcInitRef.current = true
+    if (!joined || !localStream || !meetingData) return
+    let cancelled = false
+    let pc: RTCPeerConnection | null = null
+    const role = isAdmin ? 'ADMIN' : 'CLIENT'
+    const log = (msg: string) => console.log(`[${role}-RTC] ${msg}`)
 
-    const initRTC = async () => {
-      console.log(`[ADMIN-RTC] Initializing peer connection... (reinit #${rtcReinitCounter})`)
-      const pc = new RTCPeerConnection(iceConfig)
-      peerRef.current = pc
+    const sleep = (ms: number) => new Promise<void>(r => { const t = setTimeout(r, ms); if (cancelled) clearTimeout(t) })
 
-      localStream.getTracks().forEach(track => {
-        pc.addTrack(track, localStream)
-        console.log(`[ADMIN-RTC] Added track: ${track.kind}`)
-      })
-
-      pc.ontrack = (e) => {
-        console.log(`[ADMIN-RTC] Got remote track: ${e.track.kind}`)
-        setRemoteStream(e.streams[0] || new MediaStream([e.track]))
-      }
-
-      pc.oniceconnectionstatechange = () => {
-        console.log(`[ADMIN-RTC] ICE state: ${pc.iceConnectionState}`)
-        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-          console.warn('[ADMIN-RTC] Connection lost, allowing re-init')
-          peerRef.current?.close()
-          peerRef.current = null
-          rtcInitRef.current = false
-          setRemoteStream(null)
-          setRtcReinitCounter(c => c + 1)
+    const fetchState = async () => {
+      try {
+        const keyParam = isAdmin ? `&key=${adminKey}` : ''
+        const res = await fetch(`/api/meeting?id=${meetingId}${keyParam}`)
+        const data = await res.json()
+        if (data.success) {
+          if (data.meeting?.state) setMeetingState(data.meeting.state)
+          return { state: data.meeting?.state, rtc: data.rtc || null }
         }
-      }
+      } catch {}
+      return null
+    }
 
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-
-      // Wait for ICE gathering (trickle-less approach)
-      await new Promise<void>(resolve => {
-        if (pc.iceGatheringState === 'complete') return resolve()
-        pc.addEventListener('icegatheringstatechange', function check() {
-          if (pc.iceGatheringState === 'complete') {
-            pc.removeEventListener('icegatheringstatechange', check)
-            resolve()
-          }
-        })
-        setTimeout(resolve, 8000) // longer timeout for TURN
+    const waitForICE = (peer: RTCPeerConnection): Promise<void> =>
+      new Promise(resolve => {
+        if (peer.iceGatheringState === 'complete') return resolve()
+        const check = () => { if (peer.iceGatheringState === 'complete') { peer.removeEventListener('icegatheringstatechange', check); resolve() } }
+        peer.addEventListener('icegatheringstatechange', check)
+        setTimeout(resolve, 10000)
       })
 
-      const desc = pc.localDescription
-      if (desc) {
+    const createPeer = () => {
+      const peer = new RTCPeerConnection({ iceServers })
+      localStream.getTracks().forEach(track => {
+        peer.addTrack(track, localStream)
+        log(`Added track: ${track.kind} (enabled=${track.enabled})`)
+      })
+      peer.ontrack = (e) => {
+        log(`Got remote track: ${e.track.kind}`)
+        const rs = e.streams[0] || new MediaStream([e.track])
+        setRemoteStream(rs)
+      }
+      peer.oniceconnectionstatechange = () => {
+        log(`ICE: ${peer.iceConnectionState}`)
+      }
+      peer.onconnectionstatechange = () => {
+        log(`Connection: ${peer.connectionState}`)
+      }
+      return peer
+    }
+
+    const runSignaling = async () => {
+      // Small delay to ensure join PATCH has completed on server
+      await sleep(1500)
+      if (cancelled) return
+
+      if (isAdmin) {
+        // === ADMIN FLOW ===
+        // Step 1: Wait for client to join
+        log('Waiting for client to join...')
+        while (!cancelled) {
+          const data = await fetchState()
+          if (data?.state?.clientJoined) { log('Client is in the meeting!'); break }
+          await sleep(1500)
+        }
+        if (cancelled) return
+        // Extra wait after client join so their clientJoin PATCH (which clears RTC) completes
+        await sleep(2000)
+        if (cancelled) return
+
+        // Step 2: Create peer connection + offer
+        log('Creating peer connection and offer...')
+        pc = createPeer()
+        peerRef.current = pc
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        log('Waiting for ICE candidates...')
+        await waitForICE(pc)
+        if (cancelled) { pc.close(); return }
+
+        const desc = pc.localDescription
+        if (!desc) { log('ERROR: no local description'); return }
+
+        // Step 3: Send offer to server
         await fetch('/api/meeting', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: meetingId, action: 'rtcOffer', key: adminKey,
-            offer: { type: desc.type, sdp: desc.sdp }
-          })
+          body: JSON.stringify({ id: meetingId, action: 'rtcOffer', key: adminKey, offer: { type: desc.type, sdp: desc.sdp } })
         })
-        console.log('[ADMIN-RTC] Offer sent with ICE candidates')
+        log('Offer sent to server, waiting for client answer...')
+
+        // Step 4: Poll for client's answer (fast: every 1s)
+        let answerSet = false
+        for (let attempt = 0; attempt < 60 && !cancelled && !answerSet; attempt++) {
+          await sleep(1000)
+          const data = await fetchState()
+          if (data?.rtc?.answer && pc.signalingState !== 'closed') {
+            log('Got answer from client! Setting remote description...')
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(data.rtc.answer))
+              log('Remote description set — connection establishing!')
+              answerSet = true
+            } catch (e: any) {
+              log(`Error setting answer: ${e.message}`)
+            }
+          }
+        }
+        if (!answerSet) log('Timed out waiting for client answer (60s)')
+
+      } else {
+        // === CLIENT FLOW ===
+        // Step 1: Poll for admin's offer (fast: every 1s)
+        log('Waiting for admin offer...')
+        let adminOffer: RTCSessionDescriptionInit | null = null
+        for (let attempt = 0; attempt < 90 && !cancelled; attempt++) {
+          const data = await fetchState()
+          if (data?.rtc?.offer && data?.state?.adminJoined) {
+            adminOffer = data.rtc.offer
+            log('Got offer from admin!')
+            break
+          }
+          await sleep(1000)
+        }
+        if (cancelled || !adminOffer) { log('No offer received'); return }
+
+        // Step 2: Create peer connection + answer
+        log('Creating peer connection and answer...')
+        pc = createPeer()
+        peerRef.current = pc
+        await pc.setRemoteDescription(new RTCSessionDescription(adminOffer))
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        log('Waiting for ICE candidates...')
+        await waitForICE(pc)
+        if (cancelled) { pc.close(); return }
+
+        const desc = pc.localDescription
+        if (!desc) { log('ERROR: no local description'); return }
+
+        // Step 3: Send answer to server
+        await fetch('/api/meeting', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: meetingId, action: 'rtcAnswer', answer: { type: desc.type, sdp: desc.sdp } })
+        })
+        log('Answer sent — connection should establish!')
       }
     }
 
-    initRTC().catch(e => console.error('[ADMIN-RTC] Error:', e))
-  }, [isAdmin, joined, localStream, meetingId, adminKey, rtcReinitCounter])
+    runSignaling().catch(e => log(`Error: ${e.message}`))
 
-  // Admin: set remote description when client's answer arrives via polling
-  useEffect(() => {
-    if (!isAdmin || !peerRef.current || !rtcData?.answer) return
-    if (peerRef.current.remoteDescription) return
-    console.log('[ADMIN-RTC] Setting remote description (answer)')
-    peerRef.current.setRemoteDescription(new RTCSessionDescription(rtcData.answer))
-      .then(() => console.log('[ADMIN-RTC] Connection established!'))
-      .catch(e => console.error('[ADMIN-RTC] Error setting answer:', e))
-  }, [isAdmin, rtcData])
-
-  // Client: when admin's offer arrives via polling, create answer and send back
-  // Track the last offer SDP we processed to detect new offers from admin re-init
-  const lastOfferSdpRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    if (isAdmin || !joined || !localStream || !rtcData?.offer || !meetingState.adminJoined) return
-
-    // Skip if we already processed this exact offer
-    const offerSdp = rtcData.offer.sdp
-    if (lastOfferSdpRef.current === offerSdp && peerRef.current) return
-    lastOfferSdpRef.current = offerSdp
-
-    // Close existing peer if any (admin sent a new offer = re-init)
-    if (peerRef.current) {
-      console.log('[CLIENT-RTC] New offer detected, closing old peer...')
-      peerRef.current.close()
-      peerRef.current = null
+    return () => {
+      cancelled = true
+      if (pc) { pc.close(); pc = null }
+      if (peerRef.current) { peerRef.current.close(); peerRef.current = null }
       setRemoteStream(null)
     }
+  }, [joined, localStream, isAdmin, meetingId, adminKey, meetingData]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    const handleOffer = async () => {
-      console.log('[CLIENT-RTC] Got offer from admin, creating answer...')
-      const pc = new RTCPeerConnection(iceConfig)
-      peerRef.current = pc
-
-      // Send ALL tracks from client to admin
-      localStream.getTracks().forEach(track => {
-        pc.addTrack(track, localStream)
-        console.log(`[CLIENT-RTC] Added track: ${track.kind}`)
-      })
-
-      pc.ontrack = (e) => {
-        console.log(`[CLIENT-RTC] Got remote track: ${e.track.kind}`)
-        setRemoteStream(e.streams[0] || new MediaStream([e.track]))
-      }
-
-      pc.oniceconnectionstatechange = () => {
-        console.log(`[CLIENT-RTC] ICE state: ${pc.iceConnectionState}`)
-        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-          console.warn('[CLIENT-RTC] Connection lost')
-          peerRef.current?.close()
-          peerRef.current = null
-          lastOfferSdpRef.current = null // allow re-processing next offer
-          setRemoteStream(null)
-        }
-      }
-
-      await pc.setRemoteDescription(new RTCSessionDescription(rtcData.offer))
-      const answer = await pc.createAnswer()
-      await pc.setLocalDescription(answer)
-
-      await new Promise<void>(resolve => {
-        if (pc.iceGatheringState === 'complete') return resolve()
-        pc.addEventListener('icegatheringstatechange', function check() {
-          if (pc.iceGatheringState === 'complete') {
-            pc.removeEventListener('icegatheringstatechange', check)
-            resolve()
-          }
-        })
-        setTimeout(resolve, 8000) // longer timeout for TURN
-      })
-
-      const desc = pc.localDescription
-      if (desc) {
-        await fetch('/api/meeting', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: meetingId, action: 'rtcAnswer',
-            answer: { type: desc.type, sdp: desc.sdp }
-          })
-        })
-        console.log('[CLIENT-RTC] Answer sent with ICE candidates')
-      }
-    }
-
-    handleOffer().catch(e => console.error('[CLIENT-RTC] Error:', e))
-  }, [isAdmin, joined, localStream, rtcData?.offer, meetingId, meetingState.adminJoined])
-
-  // Callback ref: attach remote stream as soon as the video element mounts
+  // Attach remote stream to video element when either changes
   const remoteVideoCallback = useCallback((el: HTMLVideoElement | null) => {
     remoteVideoRef.current = el
     if (el && remoteStream) {
       el.srcObject = remoteStream
+      el.play().catch(() => {})
       console.log('[RTC] Remote stream attached to video element')
     }
   }, [remoteStream])
 
-  // Cleanup peer connection on unmount
+  // Also re-attach if remoteStream changes while video element exists
   useEffect(() => {
-    return () => {
-      peerRef.current?.close()
-      peerRef.current = null
+    const el = remoteVideoRef.current
+    if (el && remoteStream) {
+      el.srcObject = remoteStream
+      el.play().catch(() => {})
+      console.log('[RTC] Remote stream re-attached via effect')
     }
-  }, [])
+  }, [remoteStream])
 
   // --- LOADING ---
   if (loading) {
