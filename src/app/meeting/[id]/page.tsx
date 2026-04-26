@@ -605,13 +605,18 @@ function MeetingRoomInner() {
   useEffect(() => {
     if (!joined || !localStream || !meetingData) return
     let cancelled = false
-    let pc: RTCPeerConnection | null = null
+    let activePc: RTCPeerConnection | null = null
     const role = isAdmin ? 'ADMIN' : 'CLIENT'
     const log = (msg: string) => console.log(`[${role}-RTC] ${msg}`)
 
-    const sleep = (ms: number) => new Promise<void>(r => { const t = setTimeout(r, ms); if (cancelled) clearTimeout(t) })
+    const sleep = (ms: number) => new Promise<void>(resolve => {
+      if (cancelled) return resolve()
+      const t = setTimeout(resolve, ms)
+      // Store timeout for cleanup
+      return () => clearTimeout(t)
+    })
 
-    const fetchState = async () => {
+    const fetchRtc = async () => {
       try {
         const keyParam = isAdmin ? `&key=${adminKey}` : ''
         const res = await fetch(`/api/meeting?id=${meetingId}${keyParam}`)
@@ -620,7 +625,9 @@ function MeetingRoomInner() {
           if (data.meeting?.state) setMeetingState(data.meeting.state)
           return { state: data.meeting?.state, rtc: data.rtc || null }
         }
-      } catch {}
+      } catch (e: any) {
+        log(`fetchRtc error: ${e.message}`)
+      }
       return null
     }
 
@@ -644,79 +651,91 @@ function MeetingRoomInner() {
         setRemoteStream(rs)
       }
       peer.oniceconnectionstatechange = () => {
-        log(`ICE: ${peer.iceConnectionState}`)
+        log(`ICE state: ${peer.iceConnectionState}`)
       }
       peer.onconnectionstatechange = () => {
-        log(`Connection: ${peer.connectionState}`)
+        log(`Connection state: ${peer.connectionState}`)
       }
       return peer
     }
 
-    const runSignaling = async () => {
-      // Small delay to ensure join PATCH has completed on server
-      await sleep(1500)
-      if (cancelled) return
+    // Wait for connection to establish (max waitSec)
+    const waitForConnection = (peer: RTCPeerConnection, waitSec: number): Promise<boolean> =>
+      new Promise(resolve => {
+        if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') return resolve(true)
+        let resolved = false
+        const done = (result: boolean) => { if (!resolved) { resolved = true; resolve(result) } }
+        const check = () => {
+          const s = peer.iceConnectionState
+          if (s === 'connected' || s === 'completed') done(true)
+          else if (s === 'failed' || s === 'closed') done(false)
+        }
+        peer.addEventListener('iceconnectionstatechange', check)
+        setTimeout(() => done(false), waitSec * 1000)
+      })
+
+    const attemptSignaling = async (): Promise<boolean> => {
+      if (cancelled) return false
 
       if (isAdmin) {
         // === ADMIN FLOW ===
-        // Step 1: Wait for client to join
         log('Waiting for client to join...')
-        while (!cancelled) {
-          const data = await fetchState()
+        for (let i = 0; i < 120 && !cancelled; i++) {
+          const data = await fetchRtc()
           if (data?.state?.clientJoined) { log('Client is in the meeting!'); break }
           await sleep(1500)
         }
-        if (cancelled) return
-        // Extra wait after client join so their clientJoin PATCH (which clears RTC) completes
-        await sleep(2000)
-        if (cancelled) return
+        if (cancelled) return false
+        await sleep(2000) // wait for clientJoin PATCH to clear stale RTC
+        if (cancelled) return false
 
-        // Step 2: Create peer connection + offer
-        log('Creating peer connection and offer...')
-        pc = createPeer()
+        log('Creating offer...')
+        const pc = createPeer()
+        activePc = pc
         peerRef.current = pc
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
-        log('Waiting for ICE candidates...')
         await waitForICE(pc)
-        if (cancelled) { pc.close(); return }
+        if (cancelled) { pc.close(); return false }
 
         const desc = pc.localDescription
-        if (!desc) { log('ERROR: no local description'); return }
+        if (!desc) { log('ERROR: no local description'); pc.close(); return false }
 
-        // Step 3: Send offer to server
+        log('Sending offer to server...')
         await fetch('/api/meeting', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: meetingId, action: 'rtcOffer', key: adminKey, offer: { type: desc.type, sdp: desc.sdp } })
         })
-        log('Offer sent to server, waiting for client answer...')
+        log('Offer sent, polling for answer...')
 
-        // Step 4: Poll for client's answer (fast: every 1s)
         let answerSet = false
-        for (let attempt = 0; attempt < 60 && !cancelled && !answerSet; attempt++) {
+        for (let i = 0; i < 60 && !cancelled && !answerSet; i++) {
           await sleep(1000)
-          const data = await fetchState()
+          const data = await fetchRtc()
           if (data?.rtc?.answer && pc.signalingState !== 'closed') {
-            log('Got answer from client! Setting remote description...')
             try {
               await pc.setRemoteDescription(new RTCSessionDescription(data.rtc.answer))
-              log('Remote description set — connection establishing!')
+              log('Answer set! Waiting for ICE connection...')
               answerSet = true
             } catch (e: any) {
               log(`Error setting answer: ${e.message}`)
             }
           }
         }
-        if (!answerSet) log('Timed out waiting for client answer (60s)')
+        if (!answerSet) { log('No answer received'); pc.close(); return false }
+
+        // Wait for actual connection
+        const connected = await waitForConnection(pc, 15)
+        log(connected ? 'CONNECTION ESTABLISHED!' : 'Connection failed after answer')
+        return connected
 
       } else {
         // === CLIENT FLOW ===
-        // Step 1: Poll for admin's offer (fast: every 1s)
-        log('Waiting for admin offer...')
+        log('Polling for admin offer...')
         let adminOffer: RTCSessionDescriptionInit | null = null
-        for (let attempt = 0; attempt < 90 && !cancelled; attempt++) {
-          const data = await fetchState()
+        for (let i = 0; i < 120 && !cancelled; i++) {
+          const data = await fetchRtc()
           if (data?.rtc?.offer && data?.state?.adminJoined) {
             adminOffer = data.rtc.offer
             log('Got offer from admin!')
@@ -724,41 +743,103 @@ function MeetingRoomInner() {
           }
           await sleep(1000)
         }
-        if (cancelled || !adminOffer) { log('No offer received'); return }
+        if (cancelled || !adminOffer) { log('No offer received'); return false }
 
-        // Step 2: Create peer connection + answer
-        log('Creating peer connection and answer...')
-        pc = createPeer()
+        log('Creating answer...')
+        const pc = createPeer()
+        activePc = pc
         peerRef.current = pc
         await pc.setRemoteDescription(new RTCSessionDescription(adminOffer))
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
-        log('Waiting for ICE candidates...')
         await waitForICE(pc)
-        if (cancelled) { pc.close(); return }
+        if (cancelled) { pc.close(); return false }
 
         const desc = pc.localDescription
-        if (!desc) { log('ERROR: no local description'); return }
+        if (!desc) { log('ERROR: no local description'); pc.close(); return false }
 
-        // Step 3: Send answer to server
+        log('Sending answer to server...')
         await fetch('/api/meeting', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: meetingId, action: 'rtcAnswer', answer: { type: desc.type, sdp: desc.sdp } })
         })
-        log('Answer sent — connection should establish!')
+        log('Answer sent! Waiting for ICE connection...')
+
+        const connected = await waitForConnection(pc, 15)
+        log(connected ? 'CONNECTION ESTABLISHED!' : 'Connection failed after answer')
+        return connected
       }
     }
 
-    runSignaling().catch(e => log(`Error: ${e.message}`))
+    // Main loop: retry signaling up to 5 times if connection fails
+    const runWithRetry = async () => {
+      await sleep(1500) // initial delay for join PATCH
+      if (cancelled) return
+
+      for (let attempt = 1; attempt <= 5 && !cancelled; attempt++) {
+        log(`=== Signaling attempt ${attempt}/5 ===`)
+        try {
+          // Close previous connection if any
+          if (activePc) { activePc.close(); activePc = null }
+          setRemoteStream(null)
+
+          // Clear stale RTC data before retry (admin only)
+          if (attempt > 1 && isAdmin) {
+            await fetch('/api/meeting', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: meetingId, action: 'adminJoin', key: adminKey })
+            })
+            await sleep(1000)
+          }
+
+          const success = await attemptSignaling()
+          if (success) {
+            log('WebRTC connected successfully!')
+            // Monitor connection — retry if it drops
+            const connPc = activePc as RTCPeerConnection | null
+            if (connPc) {
+              const monitorConnection = () => {
+                if (cancelled) return
+                const state = connPc.iceConnectionState
+                if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+                  log(`Connection lost (${state}) — will retry in 3s`)
+                  connPc.removeEventListener('iceconnectionstatechange', monitorConnection)
+                  setTimeout(() => {
+                    if (!cancelled) {
+                      log('Restarting signaling after disconnect...')
+                      runWithRetry()
+                    }
+                  }, 3000)
+                }
+              }
+              connPc.addEventListener('iceconnectionstatechange', monitorConnection)
+            }
+            return // success — exit retry loop
+          }
+        } catch (e: any) {
+          log(`Attempt ${attempt} error: ${e.message}`)
+        }
+
+        if (attempt < 5 && !cancelled) {
+          const waitSec = attempt * 3
+          log(`Retrying in ${waitSec}s...`)
+          await sleep(waitSec * 1000)
+        }
+      }
+      log('All signaling attempts exhausted')
+    }
+
+    runWithRetry().catch(e => log(`Fatal error: ${e.message}`))
 
     return () => {
       cancelled = true
-      if (pc) { pc.close(); pc = null }
+      if (activePc) { activePc.close(); activePc = null }
       if (peerRef.current) { peerRef.current.close(); peerRef.current = null }
       setRemoteStream(null)
     }
-  }, [joined, localStream, isAdmin, meetingId, adminKey, meetingData]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [joined, localStream, isAdmin, meetingId, adminKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Attach remote stream to video element when either changes
   const remoteVideoCallback = useCallback((el: HTMLVideoElement | null) => {
