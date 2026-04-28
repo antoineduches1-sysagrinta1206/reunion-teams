@@ -5,8 +5,10 @@ import path from 'path'
 export const runtime = 'nodejs'
 
 const PCM_RATE = 16000 // 16kHz mono 16-bit
-const NOISE_GATE_THRESHOLD = 120 // samples below this amplitude are zeroed out
-const FADE_SAMPLES = 800 // ~50ms fade-in/fade-out at 16kHz
+const NOISE_GATE_THRESHOLD = 400 // aggressive: zero out low-level ElevenLabs artifacts
+const FADE_IN_SAMPLES = 800 // ~50ms fade-in at 16kHz
+const FADE_OUT_SAMPLES = 2400 // ~150ms fade-out — gives OmniHuman time to close mouth
+const HARD_SILENCE_AFTER = 4800 // ~300ms of forced zeros after speech ends
 
 // Apply noise gate + fade-in/fade-out to clean PCM speech segment
 // This prevents OmniHuman from generating mouth movements during silence
@@ -33,7 +35,7 @@ function cleanPcmSegment(pcm: Buffer): Buffer {
   }
 
   // Pass 3: fade-in at speech start
-  const fadeIn = Math.min(FADE_SAMPLES, speechEnd - speechStart)
+  const fadeIn = Math.min(FADE_IN_SAMPLES, speechEnd - speechStart)
   for (let i = 0; i < fadeIn; i++) {
     const idx = speechStart + i
     if (idx >= numSamples) break
@@ -42,14 +44,21 @@ function cleanPcmSegment(pcm: Buffer): Buffer {
     cleaned.writeInt16LE(Math.round(sample * factor), idx * 2)
   }
 
-  // Pass 4: fade-out at speech end
-  const fadeOut = Math.min(FADE_SAMPLES, speechEnd - speechStart)
+  // Pass 4: longer fade-out at speech end (critical for OmniHuman mouth closure)
+  const fadeOut = Math.min(FADE_OUT_SAMPLES, speechEnd - speechStart)
   for (let i = 0; i < fadeOut; i++) {
     const idx = speechEnd - i
     if (idx < 0) break
     const sample = cleaned.readInt16LE(idx * 2)
     const factor = i / fadeOut
     cleaned.writeInt16LE(Math.round(sample * factor), idx * 2)
+  }
+
+  // Pass 5: hard-silence zone after speech ends — force zeros for 300ms
+  const silenceStart = speechEnd + 1
+  const silenceEnd = Math.min(numSamples, silenceStart + HARD_SILENCE_AFTER)
+  for (let i = silenceStart; i < silenceEnd; i++) {
+    cleaned.writeInt16LE(0, i * 2)
   }
 
   return cleaned
@@ -125,7 +134,14 @@ export async function POST(request: NextRequest) {
 
         if (startByte >= 0 && startByte < totalBytes && maxCopy > 0) {
           pcmData.copy(track, startByte, 0, maxCopy)
-          console.log(`[COMBINE] ${pid}: speech at ${seg.startTime.toFixed(1)}s (${(pcmData.length / PCM_RATE / 2).toFixed(1)}s, cleaned)`)
+          // SAFETY: Force 500ms of absolute zeros AFTER the copied segment in the track
+          // This guarantees OmniHuman sees zero energy after speech ends
+          const safetyZoneStart = startByte + maxCopy
+          const safetyZoneBytes = Math.min(PCM_RATE * 2 * 0.5, totalBytes - safetyZoneStart)
+          if (safetyZoneBytes > 0) {
+            Buffer.alloc(safetyZoneBytes).copy(track, safetyZoneStart)
+          }
+          console.log(`[COMBINE] ${pid}: speech at ${seg.startTime.toFixed(1)}s (${(pcmData.length / PCM_RATE / 2).toFixed(1)}s, cleaned + 500ms safety zone)`)
         }
       }
 

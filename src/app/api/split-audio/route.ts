@@ -5,6 +5,21 @@ import path from 'path'
 export const runtime = 'nodejs'
 
 const PCM_RATE = 16000 // 16kHz mono 16-bit
+const NOISE_GATE_THRESHOLD = 400 // match combine-audio threshold
+
+// Apply noise gate to a PCM chunk — force near-silent samples to absolute zero
+// OmniHuman is extremely sensitive to any audio energy for lip-sync
+function applyNoiseGate(pcm: Buffer): Buffer {
+  const cleaned = Buffer.from(pcm)
+  const numSamples = cleaned.length / 2
+  for (let i = 0; i < numSamples; i++) {
+    const sample = cleaned.readInt16LE(i * 2)
+    if (Math.abs(sample) < NOISE_GATE_THRESHOLD) {
+      cleaned.writeInt16LE(0, i * 2)
+    }
+  }
+  return cleaned
+}
 
 // Build a WAV file buffer from raw PCM data
 function buildWavBuffer(pcmData: Buffer): Buffer {
@@ -72,7 +87,9 @@ export async function POST(request: NextRequest) {
 
     while (offset < pcmData.length) {
       const end = Math.min(offset + chunkBytes, pcmData.length)
-      const chunkPcm = pcmData.subarray(offset, end)
+      const rawChunkPcm = pcmData.subarray(offset, end)
+      // Apply noise gate to ensure silent parts are truly zero
+      const chunkPcm = applyNoiseGate(Buffer.from(rawChunkPcm))
       const chunkDuration = chunkPcm.length / (PCM_RATE * 2)
 
       const baseName = wavPath ? path.basename(wavPath, '.wav') : 'inline'
