@@ -144,31 +144,59 @@ export async function POST(request: NextRequest) {
       console.log(`[GEN] Audio padded: +0.8s before, +0.6s after → ${(paddedPcm.length / PCM_RATE / 2).toFixed(1)}s total`)
     }
 
-    // Step 2: Create prediction on Replicate (returns immediately — no waiting)
+    // Step 2: Create prediction on Replicate with retry (upstream errors are transient)
     console.log(`[GEN] Step 2: Creating OmniHuman 1.5 prediction...`)
 
-    const createRes = await fetch('https://api.replicate.com/v1/models/bytedance/omni-human-1.5/predictions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${REPLICATE_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        input: { image: photoBase64, audio: audioB64, prompt: videoPrompt },
-      }),
-    })
+    const MAX_RETRIES = 3
+    let prediction: any = null
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const createRes = await fetch('https://api.replicate.com/v1/models/bytedance/omni-human-1.5/predictions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${REPLICATE_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            input: { image: photoBase64, audio: audioB64, prompt: videoPrompt },
+          }),
+        })
 
-    if (!createRes.ok) {
-      const errText = await createRes.text()
-      console.error(`[GEN] Replicate create error ${createRes.status}:`, errText.slice(0, 300))
-      if (createRes.status === 402) {
-        return NextResponse.json({ error: 'Crédit Replicate insuffisant. Recharge sur replicate.com/account/billing' }, { status: 402 })
+        if (createRes.ok) {
+          prediction = await createRes.json()
+          console.log(`[GEN] Prediction ${prediction.id} created (attempt ${attempt})`)
+          break
+        }
+
+        const errText = await createRes.text()
+        console.error(`[GEN] Replicate error ${createRes.status} (attempt ${attempt}/${MAX_RETRIES}):`, errText.slice(0, 200))
+
+        if (createRes.status === 402) {
+          return NextResponse.json({ error: 'Crédit Replicate insuffisant. Recharge sur replicate.com/account/billing' }, { status: 402 })
+        }
+
+        if (attempt < MAX_RETRIES) {
+          const waitSec = attempt * 10
+          console.log(`[GEN] Retrying in ${waitSec}s...`)
+          await sleep(waitSec * 1000)
+        } else {
+          return NextResponse.json({ error: `Replicate error after ${MAX_RETRIES} attempts: ${errText.slice(0, 150)}` }, { status: 500 })
+        }
+      } catch (fetchErr: any) {
+        console.error(`[GEN] Fetch error (attempt ${attempt}/${MAX_RETRIES}):`, fetchErr.message)
+        if (attempt < MAX_RETRIES) {
+          const waitSec = attempt * 10
+          console.log(`[GEN] Retrying in ${waitSec}s...`)
+          await sleep(waitSec * 1000)
+        } else {
+          return NextResponse.json({ error: `Network error after ${MAX_RETRIES} attempts: ${fetchErr.message}` }, { status: 500 })
+        }
       }
-      return NextResponse.json({ error: `Replicate error ${createRes.status}: ${errText.slice(0, 150)}` }, { status: 500 })
     }
 
-    const prediction = await createRes.json()
-    console.log(`[GEN] Prediction ${prediction.id} created — returning immediately`)
+    if (!prediction) {
+      return NextResponse.json({ error: 'Failed to create prediction after retries' }, { status: 500 })
+    }
 
     // Return prediction ID immediately — frontend will poll via /api/check-prediction
     return NextResponse.json({
