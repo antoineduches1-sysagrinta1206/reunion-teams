@@ -12,6 +12,9 @@ interface CaseConfig {
   photoPath: string | null
   photoBase64: string | null
   voiceId: string
+  clonedVoiceId: string | null
+  voiceCloneStatus: 'none' | 'uploading' | 'cloned' | 'error'
+  voiceCloneFileName: string | null
 }
 
 interface ListenerConfig {
@@ -43,10 +46,10 @@ const COLORS = ['#7B83EB', '#E74856', '#00A4EF', '#FFB900', '#9B59B6']
 export default function ScenarioBuilder() {
   const [voices, setVoices] = useState<Record<string, VoiceOption>>({})
   const [cases, setCases] = useState<CaseConfig[]>([
-    { id: 'p1', label: 'Case 1', color: COLORS[0], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
-    { id: 'p2', label: 'Case 2', color: COLORS[1], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
-    { id: 'p3', label: 'Case 3', color: COLORS[2], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
-    { id: 'p4', label: 'Case 4', color: COLORS[3], photo: null, photoPath: null, photoBase64: null, voiceId: '' },
+    { id: 'p1', label: 'Case 1', color: COLORS[0], photo: null, photoPath: null, photoBase64: null, voiceId: '', clonedVoiceId: null, voiceCloneStatus: 'none', voiceCloneFileName: null },
+    { id: 'p2', label: 'Case 2', color: COLORS[1], photo: null, photoPath: null, photoBase64: null, voiceId: '', clonedVoiceId: null, voiceCloneStatus: 'none', voiceCloneFileName: null },
+    { id: 'p3', label: 'Case 3', color: COLORS[2], photo: null, photoPath: null, photoBase64: null, voiceId: '', clonedVoiceId: null, voiceCloneStatus: 'none', voiceCloneFileName: null },
+    { id: 'p4', label: 'Case 4', color: COLORS[3], photo: null, photoPath: null, photoBase64: null, voiceId: '', clonedVoiceId: null, voiceCloneStatus: 'none', voiceCloneFileName: null },
   ])
   const [lines, setLines] = useState<ScriptLine[]>([
     { id: 'l1', caseId: 'p1', text: '' },
@@ -63,6 +66,7 @@ export default function ScenarioBuilder() {
   const [adminLink, setAdminLink] = useState<string | null>(null)
   const [listeners, setListeners] = useState<ListenerConfig[]>([])
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const voiceFileRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const listenerFileRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const [activePredictions, setActivePredictions] = useState<string[]>([])
   const cancelledRef = useRef(false)
@@ -131,6 +135,7 @@ export default function ScenarioBuilder() {
     setCases(prev => [...prev, {
       id: `p${idx + 1}`, label: `Case ${idx + 1}`, color: COLORS[idx],
       photo: null, photoPath: null, photoBase64: null, voiceId: keys[idx] || keys[0] || '',
+      clonedVoiceId: null, voiceCloneStatus: 'none' as const, voiceCloneFileName: null,
     }])
   }
 
@@ -166,6 +171,51 @@ export default function ScenarioBuilder() {
       setListeners(prev => prev.map(l => l.id === listenerId ? { ...l, photo: preview, photoBase64: base64, photoPath: listenerId } : l))
     }
     reader.readAsDataURL(resized)
+  }
+
+  const handleVoiceClone = async (caseId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const c = cases.find(cc => cc.id === caseId)
+    if (!c) return
+
+    setCases(prev => prev.map(cc => cc.id === caseId ? { ...cc, voiceCloneStatus: 'uploading', voiceCloneFileName: file.name } : cc))
+
+    try {
+      const formData = new FormData()
+      formData.append('audio', file)
+      formData.append('name', c.label || caseId)
+
+      const res = await fetch('/api/clone-voice', { method: 'POST', body: formData })
+      const data = await res.json()
+
+      if (data.success && data.voiceId) {
+        setCases(prev => prev.map(cc => cc.id === caseId ? {
+          ...cc,
+          clonedVoiceId: data.voiceId,
+          voiceCloneStatus: 'cloned',
+        } : cc))
+        console.log(`[CLONE] ${c.label}: voice cloned → ${data.voiceId}`)
+      } else {
+        setCases(prev => prev.map(cc => cc.id === caseId ? { ...cc, voiceCloneStatus: 'error' } : cc))
+        console.error(`[CLONE] ${c.label}: failed -`, data.error)
+      }
+    } catch (err) {
+      setCases(prev => prev.map(cc => cc.id === caseId ? { ...cc, voiceCloneStatus: 'error' } : cc))
+      console.error(`[CLONE] ${c.label}: error -`, err)
+    }
+  }
+
+  const removeVoiceClone = (caseId: string) => {
+    const c = cases.find(cc => cc.id === caseId)
+    if (c?.clonedVoiceId) {
+      fetch('/api/clone-voice', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voiceId: c.clonedVoiceId }),
+      }).catch(() => {})
+    }
+    setCases(prev => prev.map(cc => cc.id === caseId ? { ...cc, clonedVoiceId: null, voiceCloneStatus: 'none', voiceCloneFileName: null } : cc))
   }
 
   // Helper: poll a Replicate prediction until done (each poll is fast — avoids Railway timeout)
@@ -278,7 +328,7 @@ export default function ScenarioBuilder() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: line.text.trim(),
-            voiceId: c.voiceId,
+            voiceId: c.clonedVoiceId || c.voiceId,
             filename: `tts-${i + 1}-${line.caseId}-${Date.now()}.pcm`,
           }),
         })
@@ -753,14 +803,44 @@ export default function ScenarioBuilder() {
                 <input ref={el => { fileRefs.current[c.id] = el }} type="file" accept="image/*" style={{ display: 'none' }}
                   onChange={e => handlePhoto(c.id, e)} />
 
-                {/* Voice */}
-                <select
-                  value={c.voiceId}
-                  onChange={e => setCases(prev => prev.map(cc => cc.id === c.id ? { ...cc, voiceId: e.target.value } : cc))}
-                  style={{ width: '100%', padding: '4px 6px', background: '#151515', border: '1px solid #333', borderRadius: 4, color: 'white', fontSize: 10 }}
-                >
-                  {Object.entries(voices).map(([id, v]) => <option key={id} value={id}>{v.label}</option>)}
-                </select>
+                {/* Voice clone */}
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: '#888', marginBottom: 4, fontWeight: 600 }}>Voix clonee (audio sample) :</div>
+                  {c.voiceCloneStatus === 'cloned' ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: '#064e3b', borderRadius: 4, border: '1px solid #10b981' }}>
+                      <span style={{ fontSize: 10, color: '#4ade80', flex: 1 }}>✓ {c.voiceCloneFileName}</span>
+                      <button onClick={() => removeVoiceClone(c.id)} style={{ fontSize: 9, color: '#f87171', background: 'none', border: 'none', cursor: 'pointer' }}>X</button>
+                    </div>
+                  ) : c.voiceCloneStatus === 'uploading' ? (
+                    <div style={{ fontSize: 10, color: '#fbbf24', padding: '4px 8px', background: '#1a1a1a', borderRadius: 4 }}>Clonage en cours...</div>
+                  ) : (
+                    <div
+                      onClick={() => voiceFileRefs.current[c.id]?.click()}
+                      style={{
+                        padding: '6px 8px', borderRadius: 4, border: '1px dashed #6366f1', background: '#1a1a2e',
+                        cursor: 'pointer', fontSize: 10, color: '#a5b4fc', textAlign: 'center',
+                      }}
+                    >
+                      {c.voiceCloneStatus === 'error' ? '⚠ Erreur — re-essayer' : 'Uploader un audio pour cloner'}
+                    </div>
+                  )}
+                  <input ref={el => { voiceFileRefs.current[c.id] = el }} type="file" accept="audio/*" style={{ display: 'none' }}
+                    onChange={e => handleVoiceClone(c.id, e)} />
+                </div>
+
+                {/* Pre-made voice fallback */}
+                {!c.clonedVoiceId && (
+                  <div>
+                    <div style={{ fontSize: 9, color: '#888', marginBottom: 4 }}>Ou voix pre-faite :</div>
+                    <select
+                      value={c.voiceId}
+                      onChange={e => setCases(prev => prev.map(cc => cc.id === c.id ? { ...cc, voiceId: e.target.value } : cc))}
+                      style={{ width: '100%', padding: '4px 6px', background: '#151515', border: '1px solid #333', borderRadius: 4, color: 'white', fontSize: 10 }}
+                    >
+                      {Object.entries(voices).map(([id, v]) => <option key={id} value={id}>{v.label}</option>)}
+                    </select>
+                  </div>
+                )}
               </div>
             ))}
           </div>
