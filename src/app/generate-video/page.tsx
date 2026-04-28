@@ -14,6 +14,16 @@ interface CaseConfig {
   voiceId: string
 }
 
+interface ListenerConfig {
+  id: string
+  label: string
+  color: string
+  photo: string | null
+  photoPath: string | null
+  photoBase64: string | null
+  idleVideoUrl: string
+}
+
 interface ScriptLine {
   id: string
   caseId: string
@@ -51,7 +61,9 @@ export default function ScenarioBuilder() {
   const [launched, setLaunched] = useState(false)
   const [meetingLink, setMeetingLink] = useState<string | null>(null)
   const [adminLink, setAdminLink] = useState<string | null>(null)
+  const [listeners, setListeners] = useState<ListenerConfig[]>([])
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const listenerFileRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const [activePredictions, setActivePredictions] = useState<string[]>([])
   const cancelledRef = useRef(false)
 
@@ -126,6 +138,34 @@ export default function ScenarioBuilder() {
     if (cases.length <= 2) return
     setCases(prev => prev.filter(c => c.id !== id))
     setLines(prev => prev.map(l => l.caseId === id ? { ...l, caseId: cases[0].id } : l))
+  }
+
+  const LISTENER_COLORS = ['#6B7280', '#9CA3AF', '#78716C', '#A3A3A3', '#71717A', '#D4D4D8', '#94A3B8']
+
+  const addListener = () => {
+    if (listeners.length >= 7) return
+    const idx = listeners.length
+    setListeners(prev => [...prev, {
+      id: `listener_${Date.now()}`, label: `Observateur ${idx + 1}`, color: LISTENER_COLORS[idx % LISTENER_COLORS.length],
+      photo: null, photoPath: null, photoBase64: null, idleVideoUrl: '',
+    }])
+  }
+
+  const removeListener = (id: string) => {
+    setListeners(prev => prev.filter(l => l.id !== id))
+  }
+
+  const handleListenerPhoto = async (listenerId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const preview = URL.createObjectURL(file)
+    const resized = await resizeImage(file, 1024)
+    const reader = new FileReader()
+    reader.onload = () => {
+      const base64 = reader.result as string
+      setListeners(prev => prev.map(l => l.id === listenerId ? { ...l, photo: preview, photoBase64: base64, photoPath: listenerId } : l))
+    }
+    reader.readAsDataURL(resized)
   }
 
   // Helper: poll a Replicate prediction until done (each poll is fast — avoids Railway timeout)
@@ -611,7 +651,7 @@ export default function ScenarioBuilder() {
       return
     }
     try {
-      const participantList = Object.keys(participantVideos).map(pid => {
+      const speakerList = Object.keys(participantVideos).map(pid => {
         const c = cases.find(cc => cc.id === pid)
         return {
           id: pid,
@@ -619,8 +659,18 @@ export default function ScenarioBuilder() {
           color: c?.color || '#5b5fc7',
           videoUrl: participantVideos[pid],
           idleVideoUrl: participantIdleVideos[pid] || undefined,
+          role: 'speaker' as const,
         }
       })
+      const listenerList = listeners.filter(l => l.idleVideoUrl).map(l => ({
+        id: l.id,
+        name: l.label,
+        color: l.color,
+        videoUrl: '',
+        idleVideoUrl: l.idleVideoUrl,
+        role: 'listener' as const,
+      }))
+      const participantList = [...speakerList, ...listenerList]
 
       const res = await fetch('/api/meeting', {
         method: 'POST',
@@ -635,9 +685,7 @@ export default function ScenarioBuilder() {
       const data = await res.json()
       if (data.success && data.meetingId) {
         const clientLink = `${window.location.origin}/meeting/${data.meetingId}`
-        const admLink = `${window.location.origin}/meeting/${data.meetingId}?role=admin&key=${data.adminKey}`
         setMeetingLink(clientLink)
-        setAdminLink(admLink)
         setGenStatus(prev => prev ? { ...prev, detail: 'Liens de reunion generes !' } : null)
       } else {
         console.error('Failed to create meeting:', data.error)
@@ -715,6 +763,54 @@ export default function ScenarioBuilder() {
                 </select>
               </div>
             ))}
+          </div>
+
+          {/* Listeners (silent observers) */}
+          <div style={{ marginTop: 16, borderTop: '1px solid #2a2a2a', paddingTop: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#9ca3af' }}>Observateurs ({listeners.length}/7)</div>
+              {listeners.length < 7 && (
+                <button onClick={addListener} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, border: '1px solid #444', background: 'none', color: '#888', cursor: 'pointer' }}>+ Ajouter</button>
+              )}
+            </div>
+            <div style={{ fontSize: 10, color: '#555', marginBottom: 8 }}>IA silencieuses — idle video uniquement</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {listeners.map(l => (
+                <div key={l.id} style={{ background: '#1a1a1a', borderRadius: 8, padding: 10, border: '1px solid #2a2a2a' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div style={{ width: 24, height: 24, borderRadius: '50%', background: l.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                      {l.label.charAt(0)}
+                    </div>
+                    <input
+                      value={l.label}
+                      onChange={e => setListeners(prev => prev.map(ll => ll.id === l.id ? { ...ll, label: e.target.value } : ll))}
+                      style={{ flex: 1, background: 'none', border: 'none', color: 'white', fontSize: 11, fontWeight: 600, outline: 'none' }}
+                    />
+                    <button onClick={() => removeListener(l.id)} style={{ fontSize: 10, color: '#666', background: 'none', border: 'none', cursor: 'pointer' }}>X</button>
+                  </div>
+                  {/* Photo for idle video generation */}
+                  <div
+                    onClick={() => listenerFileRefs.current[l.id]?.click()}
+                    style={{
+                      width: '100%', height: 60, borderRadius: 6, border: '1px dashed #444',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      cursor: 'pointer', overflow: 'hidden', background: '#151515',
+                    }}
+                  >
+                    {l.photo ? (
+                      <img src={l.photo} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <span style={{ fontSize: 9, color: '#555' }}>Photo (idle video)</span>
+                    )}
+                  </div>
+                  <input ref={el => { listenerFileRefs.current[l.id] = el }} type="file" accept="image/*" style={{ display: 'none' }}
+                    onChange={e => handleListenerPhoto(l.id, e)} />
+                  {l.idleVideoUrl && (
+                    <div style={{ fontSize: 9, color: '#4ade80', marginTop: 4 }}>✓ Idle video prete</div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -834,8 +930,8 @@ export default function ScenarioBuilder() {
                     <div style={{ fontSize: 24, marginBottom: 8 }}>✅</div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: '#4ade80', marginBottom: 6 }}>Reunion prete !</div>
 
-                    {/* Client link */}
-                    <div style={{ fontSize: 12, color: '#86efac', marginBottom: 8, fontWeight: 600 }}>🔗 Lien CLIENT (a envoyer au participant) :</div>
+                    {/* Meeting link */}
+                    <div style={{ fontSize: 12, color: '#86efac', marginBottom: 8, fontWeight: 600 }}>🔗 Lien de la reunion :</div>
                     <div style={{
                       display: 'flex', alignItems: 'center', gap: 8,
                       background: '#0a0a0a', borderRadius: 8, padding: '10px 14px', marginBottom: 16,
@@ -860,46 +956,13 @@ export default function ScenarioBuilder() {
                       </button>
                     </div>
 
-                    {/* Admin link */}
-                    <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 8, fontWeight: 600 }}>🛡️ Lien ADMIN (pour toi — monitoring + rejoindre) :</div>
-                    <div style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      background: '#0a0a0a', borderRadius: 8, padding: '10px 14px', marginBottom: 16,
-                    }}>
-                      <input
-                        readOnly
-                        value={adminLink || ''}
-                        onClick={e => (e.target as HTMLInputElement).select()}
-                        style={{
-                          flex: 1, background: 'none', border: 'none', color: '#93c5fd', fontSize: 13,
-                          fontFamily: 'monospace', outline: 'none', cursor: 'text',
-                        }}
-                      />
-                      <button
-                        onClick={() => { if (adminLink) navigator.clipboard.writeText(adminLink); }}
-                        style={{
-                          padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 11, fontWeight: 700,
-                          background: '#6366f1', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
-                        }}
-                      >
-                        Copier
-                      </button>
-                    </div>
-
                     <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                      <a href={adminLink || ''} target="_blank" rel="noopener noreferrer" style={{
-                        display: 'inline-block', padding: '12px 28px', borderRadius: 10, fontSize: 14, fontWeight: 800,
-                        background: 'linear-gradient(135deg, #6366f1, #4f46e5)', color: 'white', textDecoration: 'none',
-                        boxShadow: '0 4px 20px rgba(99,102,241,0.4)',
-                      }}>
-                        Ouvrir (Admin)
-                      </a>
                       <a href={meetingLink} target="_blank" rel="noopener noreferrer" style={{
                         display: 'inline-block', padding: '12px 28px', borderRadius: 10, fontSize: 14, fontWeight: 800,
                         background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', textDecoration: 'none',
                         boxShadow: '0 4px 20px rgba(16,185,129,0.4)',
                       }}>
-                        Ouvrir (Client)
+                        Ouvrir la reunion
                       </a>
                     </div>
                   </>

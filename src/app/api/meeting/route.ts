@@ -8,20 +8,13 @@ export interface MeetingData {
   title: string
   createdAt: number
   adminKey: string
-  participants: { id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string }[]
+  participants: { id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string; role?: 'speaker' | 'listener' }[]
   timeline: { participantId: string; startTime: number; endTime: number }[]
   totalDuration: number
   state: {
     started: boolean
     startedAt: number | null
     clientJoined: boolean
-    adminJoined: boolean
-  }
-  rtc?: {
-    offer?: RTCSessionDescriptionInit | null
-    answer?: RTCSessionDescriptionInit | null
-    adminCandidates?: RTCIceCandidateInit[]
-    clientCandidates?: RTCIceCandidateInit[]
   }
 }
 
@@ -64,7 +57,6 @@ export async function POST(request: NextRequest) {
       started: false,
       startedAt: null,
       clientJoined: false,
-      adminJoined: false,
     },
   }
   saveMeeting(meeting)
@@ -83,17 +75,14 @@ export async function GET(request: NextRequest) {
   if (!meeting) {
     return NextResponse.json({ error: 'Meeting not found' }, { status: 404 })
   }
-  // Don't expose adminKey in GET response unless the caller provides it
-  const key = searchParams.get('key')
-  const isAdmin = key === meeting.adminKey
-  const safeData = { ...meeting, adminKey: isAdmin ? meeting.adminKey : undefined }
-  return NextResponse.json({ success: true, meeting: safeData, isAdmin, rtc: meeting.rtc || null })
+  const safeData = { ...meeting, adminKey: undefined }
+  return NextResponse.json({ success: true, meeting: safeData })
 }
 
 // PATCH: update meeting state (join/leave/start)
 export async function PATCH(request: NextRequest) {
   const body = await request.json()
-  const { id, action, key } = body
+  const { id, action } = body
   if (!id || !action) {
     return NextResponse.json({ error: 'Missing id or action' }, { status: 400 })
   }
@@ -102,8 +91,6 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Meeting not found' }, { status: 404 })
   }
 
-  const isAdmin = key === meeting.adminKey
-
   switch (action) {
     case 'clientJoin':
       meeting.state.clientJoined = true
@@ -111,57 +98,16 @@ export async function PATCH(request: NextRequest) {
         meeting.state.started = true
         meeting.state.startedAt = Date.now()
       }
-      // Clear stale RTC data only (not admin state — admin may already be connected)
-      meeting.rtc = {}
-      console.log(`[MEETING] ${id}: Client joined (RTC data cleared, adminJoined=${meeting.state.adminJoined})`)
+      console.log(`[MEETING] ${id}: Client joined`)
       break
     case 'clientLeave':
       meeting.state.clientJoined = false
       console.log(`[MEETING] ${id}: Client left`)
       break
-    case 'adminJoin':
-      if (!isAdmin) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
-      meeting.state.adminJoined = true
-      // Clear stale RTC from previous session so fresh offer is created
-      meeting.rtc = {}
-      console.log(`[MEETING] ${id}: Admin joined (RTC reset)`)
-      break
-    case 'adminLeave':
-      if (!isAdmin) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
-      meeting.state.adminJoined = false
-      console.log(`[MEETING] ${id}: Admin left`)
-      break
-    // WebRTC signaling actions
-    case 'rtcOffer':
-      if (!isAdmin) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
-      if (!meeting.rtc) meeting.rtc = {}
-      meeting.rtc.offer = body.offer
-      meeting.rtc.answer = null
-      meeting.rtc.adminCandidates = []
-      meeting.rtc.clientCandidates = []
-      console.log(`[MEETING] ${id}: Admin sent RTC offer`)
-      break
-    case 'rtcAnswer':
-      if (!meeting.rtc) meeting.rtc = {}
-      meeting.rtc.answer = body.answer
-      console.log(`[MEETING] ${id}: Client sent RTC answer`)
-      break
-    case 'iceCandidate': {
-      if (!meeting.rtc) meeting.rtc = {}
-      const from = body.from // 'admin' or 'client'
-      if (from === 'admin') {
-        if (!meeting.rtc.adminCandidates) meeting.rtc.adminCandidates = []
-        meeting.rtc.adminCandidates.push(body.candidate)
-      } else {
-        if (!meeting.rtc.clientCandidates) meeting.rtc.clientCandidates = []
-        meeting.rtc.clientCandidates.push(body.candidate)
-      }
-      break
-    }
     default:
       return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
   }
 
   saveMeeting(meeting)
-  return NextResponse.json({ success: true, state: meeting.state, rtc: meeting.rtc })
+  return NextResponse.json({ success: true, state: meeting.state })
 }
