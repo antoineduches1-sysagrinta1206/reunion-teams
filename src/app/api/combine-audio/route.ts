@@ -5,6 +5,55 @@ import path from 'path'
 export const runtime = 'nodejs'
 
 const PCM_RATE = 16000 // 16kHz mono 16-bit
+const NOISE_GATE_THRESHOLD = 120 // samples below this amplitude are zeroed out
+const FADE_SAMPLES = 800 // ~50ms fade-in/fade-out at 16kHz
+
+// Apply noise gate + fade-in/fade-out to clean PCM speech segment
+// This prevents OmniHuman from generating mouth movements during silence
+function cleanPcmSegment(pcm: Buffer): Buffer {
+  const cleaned = Buffer.from(pcm)
+  const numSamples = cleaned.length / 2
+
+  // Pass 1: noise gate — zero out samples below threshold
+  for (let i = 0; i < numSamples; i++) {
+    const sample = cleaned.readInt16LE(i * 2)
+    if (Math.abs(sample) < NOISE_GATE_THRESHOLD) {
+      cleaned.writeInt16LE(0, i * 2)
+    }
+  }
+
+  // Pass 2: find actual speech start/end (first/last non-zero region)
+  let speechStart = 0
+  let speechEnd = numSamples - 1
+  for (let i = 0; i < numSamples; i++) {
+    if (cleaned.readInt16LE(i * 2) !== 0) { speechStart = i; break }
+  }
+  for (let i = numSamples - 1; i >= 0; i--) {
+    if (cleaned.readInt16LE(i * 2) !== 0) { speechEnd = i; break }
+  }
+
+  // Pass 3: fade-in at speech start
+  const fadeIn = Math.min(FADE_SAMPLES, speechEnd - speechStart)
+  for (let i = 0; i < fadeIn; i++) {
+    const idx = speechStart + i
+    if (idx >= numSamples) break
+    const sample = cleaned.readInt16LE(idx * 2)
+    const factor = i / fadeIn
+    cleaned.writeInt16LE(Math.round(sample * factor), idx * 2)
+  }
+
+  // Pass 4: fade-out at speech end
+  const fadeOut = Math.min(FADE_SAMPLES, speechEnd - speechStart)
+  for (let i = 0; i < fadeOut; i++) {
+    const idx = speechEnd - i
+    if (idx < 0) break
+    const sample = cleaned.readInt16LE(idx * 2)
+    const factor = i / fadeOut
+    cleaned.writeInt16LE(Math.round(sample * factor), idx * 2)
+  }
+
+  return cleaned
+}
 
 // Build a WAV file from raw PCM data and save to disk
 function saveWav(pcmData: Buffer, outPath: string) {
@@ -68,13 +117,15 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        const pcmData = fs.readFileSync(pcmFilePath)
+        const rawPcm = fs.readFileSync(pcmFilePath)
+        // Clean PCM: noise gate + fade-in/fade-out to prevent mouth movement during silence
+        const pcmData = cleanPcmSegment(rawPcm)
         const startByte = Math.floor(seg.startTime * PCM_RATE * 2)
         const maxCopy = Math.min(pcmData.length, totalBytes - startByte)
 
         if (startByte >= 0 && startByte < totalBytes && maxCopy > 0) {
           pcmData.copy(track, startByte, 0, maxCopy)
-          console.log(`[COMBINE] ${pid}: speech at ${seg.startTime.toFixed(1)}s (${(pcmData.length / PCM_RATE / 2).toFixed(1)}s)`)
+          console.log(`[COMBINE] ${pid}: speech at ${seg.startTime.toFixed(1)}s (${(pcmData.length / PCM_RATE / 2).toFixed(1)}s, cleaned)`)
         }
       }
 
