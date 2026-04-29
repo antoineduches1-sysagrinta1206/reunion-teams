@@ -666,17 +666,27 @@ export default function ScenarioBuilder() {
       // PHASE 4: Generate idle/listening videos per participant
       // Short silent videos (25s) that loop when scenario ends
       // ================================================
-      const IDLE_PROMPT = 'Continuous uninterrupted webcam shot, head and shoulders framing, fixed camera with no movement. A person is sitting in a live professional video conference call, LISTENING attentively to someone else speaking. CRITICAL: The person\'s mouth MUST remain COMPLETELY CLOSED at ALL times. Absolutely ZERO lip movement, ZERO jaw movement, ZERO mouth opening throughout the ENTIRE video. The lips stay naturally pressed together. The person shows ONLY subtle natural listening body language: slow gentle weight shifts, relaxed varied-interval blinking, very subtle eyebrow raises showing interest, gentle natural head tilts, occasional small nods as if agreeing, soft chest breathing motion, and minor postural micro-adjustments. All movements are slow, smooth, and natural — never robotic or repetitive. The person appears genuinely engaged and attentive, like a real human listening in a meeting. Photorealistic webcam quality, soft natural office lighting, shallow depth of field on background.'
-      const IDLE_DURATION = 25 // seconds — single shot, loops seamlessly
+      const IDLE_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. The person is actively listening to others speaking. Mouth fully closed at all times, no lip movement. Natural micro-movements: eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. Continuous realistic human behavior throughout. Photorealistic quality, soft office lighting.'
+      const IDLE_DURATION = 120 // 2 minutes — long enough to cover post-meeting listening
       const idleResults: Record<string, string> = {}
 
-      addLog(`[IDLE] Generation des videos d'ecoute (${IDLE_DURATION}s chacune)...`)
+      // Generate idle for ALL: speakers + observers
+      const allIdleTargets: { id: string; label: string; photoBase64: string | null }[] = [
+        ...Object.keys(videoResults).map(pid => {
+          const c = cases.find(cc => cc.id === pid)!
+          return { id: pid, label: c.label, photoBase64: c.photoBase64 }
+        }),
+        ...listeners.filter(l => l.photoBase64).map(l => ({
+          id: l.id, label: l.label, photoBase64: l.photoBase64,
+        })),
+      ]
 
-      for (const pid of Object.keys(videoResults)) {
+      addLog(`[IDLE] Generation des videos d'ecoute (${IDLE_DURATION}s) pour ${allIdleTargets.length} participants...`)
+
+      for (const target of allIdleTargets) {
         if (cancelledRef.current) break
-        const c = cases.find(cc => cc.id === pid)!
-        addLog(`[IDLE] ${c.label}: generation video idle...`)
-        setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps + Object.keys(videoResults).length, detail: `Phase 4: Video ecoute ${c.label}...`, log })
+        addLog(`[IDLE] ${target.label}: generation video idle...`)
+        setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps + allIdleTargets.length, detail: `Phase 4: Video ecoute ${target.label}...`, log })
 
         try {
           let idleSuccess = false
@@ -684,16 +694,16 @@ export default function ScenarioBuilder() {
             if (cancelledRef.current) break
             if (retry > 0) {
               const wait = retry * 10
-              addLog(`[IDLE] ${c.label}: retry ${retry}/3 dans ${wait}s...`)
+              addLog(`[IDLE] ${target.label}: retry ${retry}/3 dans ${wait}s...`)
               await new Promise(r => setTimeout(r, wait * 1000))
             }
 
-            const idleFilename = `idle-${pid}-${Date.now()}.mp4`
+            const idleFilename = `idle-${target.id}-${Date.now()}.mp4`
             const vRes = await fetch('/api/generate-video', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                photoBase64: c.photoBase64,
+                photoBase64: target.photoBase64,
                 silent: true,
                 silentDuration: IDLE_DURATION,
                 prompt: IDLE_PROMPT,
@@ -702,30 +712,33 @@ export default function ScenarioBuilder() {
             })
             const vData = await vRes.json()
             if (!vData.success || !vData.predictionId) {
-              addLog(`[IDLE] ${c.label}: ERREUR creation - ${vData.error || 'unknown'}`)
+              addLog(`[IDLE] ${target.label}: ERREUR creation - ${vData.error || 'unknown'}`)
               continue
             }
-            addLog(`[IDLE] ${c.label}: prediction ${vData.predictionId} creee, attente...`)
+            addLog(`[IDLE] ${target.label}: prediction ${vData.predictionId} creee, attente...`)
 
             const pollResult = await pollPrediction(vData.predictionId, idleFilename, (msg: string) => {
-              setGenStatus(prev => prev ? { ...prev, detail: `Phase 4: ${c.label} ecoute - ${msg}` } : null)
+              setGenStatus(prev => prev ? { ...prev, detail: `Phase 4: ${target.label} ecoute - ${msg}` } : null)
             })
             if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-              idleResults[pid] = pollResult.videoUrl
-              addLog(`[IDLE] ${c.label}: OK`)
+              idleResults[target.id] = pollResult.videoUrl
+              addLog(`[IDLE] ${target.label}: OK`)
               idleSuccess = true
             } else {
-              addLog(`[IDLE] ${c.label}: ERREUR - ${pollResult.error || 'echec'}`)
+              addLog(`[IDLE] ${target.label}: ERREUR - ${pollResult.error || 'echec'}`)
             }
           }
         } catch (err) {
-          addLog(`[IDLE] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
+          addLog(`[IDLE] ${target.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
         }
         currentStep++
       }
 
+      // Store idle results: update participant idle videos + observer idle videos
       setParticipantIdleVideos(idleResults)
-      addLog(`[IDLE] ${Object.keys(idleResults).length}/${Object.keys(videoResults).length} videos idle generees`)
+      // Update listeners state with their generated idle video URLs
+      setListeners(prev => prev.map(l => idleResults[l.id] ? { ...l, idleVideoUrl: idleResults[l.id] } : l))
+      addLog(`[IDLE] ${Object.keys(idleResults).length}/${allIdleTargets.length} videos idle generees`)
 
       setScenarioReady(totalGenerated > 0)
       setIsGenerating(false)
@@ -755,12 +768,12 @@ export default function ScenarioBuilder() {
           role: 'speaker' as const,
         }
       })
-      const listenerList = listeners.filter(l => l.idleVideoUrl).map(l => ({
+      const listenerList = listeners.filter(l => l.photoBase64).map(l => ({
         id: l.id,
         name: l.label,
         color: l.color,
         videoUrl: '',
-        idleVideoUrl: l.idleVideoUrl,
+        idleVideoUrl: l.idleVideoUrl || participantIdleVideos[l.id] || '',
         role: 'listener' as const,
       }))
       const participantList = [...speakerList, ...listenerList]

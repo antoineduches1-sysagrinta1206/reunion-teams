@@ -46,6 +46,8 @@ function MeetingRoomInner() {
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [meetingEnded, setMeetingEnded] = useState(false)
   const meetingEndedRef = useRef(false)
+  const clientVideoRef = useRef<HTMLVideoElement>(null)
+  const [clientCameraOn, setClientCameraOn] = useState(false)
 
   // Preload: download videos fully into memory (blob URLs) before playback
   const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
@@ -269,7 +271,7 @@ function MeetingRoomInner() {
           if (idleVid) {
             idleVid.volume = 0
             idleVid.muted = true
-            idleVid.loop = true
+            idleVid.loop = false // 2 min idle — no loop needed
             idleVid.currentTime = 0
             idleVid.play().catch(() => {})
             console.log(`[MEETING] ${p.name}: idle video started (crossfading in)`)
@@ -395,6 +397,14 @@ function MeetingRoomInner() {
     } catch {}
     setJoined(true)
     updateState('clientJoin')
+    // Activate client webcam (video only, NEVER mic)
+    navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(stream => {
+      if (clientVideoRef.current) {
+        clientVideoRef.current.srcObject = stream
+        clientVideoRef.current.play().catch(() => {})
+      }
+      setClientCameraOn(true)
+    }).catch(() => { console.log('[CLIENT] No webcam available') })
   }, [updateState])
 
   // After joining: wait for video elements to mount, then start playback
@@ -469,8 +479,7 @@ function MeetingRoomInner() {
           if (mainVid && mainVid.volume > 0) { mainVid.volume = 0; console.warn(`[WATCHDOG] Force-muted ${p.name} main`) }
           if (idleVid) {
             if (idleVid.volume > 0) idleVid.volume = 0
-            if (!idleVid.loop) idleVid.loop = true
-            if (idleVid.paused && idleVid.readyState >= 2) {
+            if (idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
               idleVid.play().catch(() => {})
               console.log(`[WATCHDOG] ${p.name}: restarted idle video`)
             }
@@ -508,12 +517,17 @@ function MeetingRoomInner() {
         }
 
         // Keep idle video playing (all participants — listeners always, speakers after scenario)
-        if (idleVid && idleVid.paused && idleVid.readyState >= 2) {
-          if (!isSpeakerRole || meetingEndedRef.current) {
-            idleVid.loop = true
+        if (idleVid && idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
+          if (!isSpeakerRole) {
+            idleVid.loop = true // Listeners loop during meeting
             idleVid.muted = true
             idleVid.play().catch(() => {})
-            console.log(`[WATCHDOG] ${p.name}: idle restarted`)
+            console.log(`[WATCHDOG] ${p.name}: idle restarted (listener)`)
+          } else if (meetingEndedRef.current) {
+            idleVid.loop = false // Speakers: no loop after meeting ends
+            idleVid.muted = true
+            idleVid.play().catch(() => {})
+            console.log(`[WATCHDOG] ${p.name}: idle restarted (post-meeting)`)
           }
         }
       })
@@ -706,7 +720,7 @@ function MeetingRoomInner() {
                         src={videoBlobUrls[p.id] || p.videoUrl}
                         preload="auto"
                         playsInline
-                        loop={!meetingEnded}
+                        loop={false}
                         crossOrigin="anonymous"
                         className="absolute inset-0 w-full h-full object-cover"
                         style={{ opacity: 1 }}
@@ -765,16 +779,28 @@ function MeetingRoomInner() {
                 )
               })}
 
-              {/* Client tile — initials only, no camera, mic always muted */}
+              {/* Client tile — camera ON, mic always OFF */}
               <div
                 className="relative rounded-lg overflow-hidden ring-1 ring-[#3b3b3b]"
                 style={{ backgroundColor: '#2d2d2d', aspectRatio: '16/9' }}
               >
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
-                    {displayName.charAt(0).toUpperCase()}
+                {/* Client webcam feed */}
+                <video
+                  ref={clientVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="absolute inset-0 w-full h-full object-cover"
+                  style={{ transform: 'scaleX(-1)' }}
+                />
+                {/* Fallback initials if no webcam */}
+                {!clientCameraOn && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
+                      {displayName.charAt(0).toUpperCase()}
+                    </div>
                   </div>
-                </div>
+                )}
                 <div className="absolute bottom-0 left-0 right-0 z-20">
                   <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
                     <div className="rounded-full p-0.5 bg-red-600">
