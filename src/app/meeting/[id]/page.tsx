@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import MeetingToolbar from '../../../components/MeetingToolbar'
 import { Mic, MicOff, MoreHorizontal, X, StopCircle } from 'lucide-react'
 
@@ -28,16 +28,20 @@ interface MeetingData {
   totalDuration: number
   excludedParticipants?: string[]
   ended?: boolean
+  isTemplate?: boolean
+  templateId?: string
 }
 
 function MeetingRoomInner() {
   const params = useParams()
+  const router = useRouter()
   const meetingId = params.id as string
 
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [joined, setJoined] = useState(false)
+  const [isTemplate, setIsTemplate] = useState(false) // true if this is a template link (needs clone)
   const [elapsed, setElapsed] = useState(0)
   const [showChat, setShowChat] = useState(false)
   const [showParticipants, setShowParticipants] = useState(false)
@@ -65,14 +69,20 @@ function MeetingRoomInner() {
   const playStartRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Fetch meeting data
+  // Fetch meeting data — if template, show lobby to enter name then clone
   useEffect(() => {
     if (!meetingId) return
     fetch(`/api/meeting?id=${meetingId}`)
       .then(r => r.json())
       .then(data => {
         if (data.success && data.meeting) {
-          setMeetingData(data.meeting)
+          if (data.meeting.isTemplate) {
+            // This is a template link — show lobby, clone on join
+            setIsTemplate(true)
+            setMeetingData(data.meeting)
+          } else {
+            setMeetingData(data.meeting)
+          }
         } else {
           setLoadError(data.error || 'Reunion introuvable')
         }
@@ -448,8 +458,29 @@ function MeetingRoomInner() {
   }, [meetingId])
 
   // Handle join — requires user click (browser autoplay policy)
-  const handleJoin = useCallback(() => {
-    // Unlock audio context with BOTH methods (required by browsers)
+  // If template: clone first, then redirect to session
+  const handleJoin = useCallback(async () => {
+    if (isTemplate) {
+      // Clone the template into a new session
+      try {
+        const res = await fetch('/api/meeting', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: meetingId, action: 'clone', clientName: displayName }),
+        })
+        const data = await res.json()
+        if (data.success && data.sessionId) {
+          console.log(`[MEETING] Template cloned -> session ${data.sessionId}`)
+          router.push(`/meeting/${data.sessionId}`)
+          return
+        }
+      } catch (err) {
+        console.error('[MEETING] Clone failed:', err)
+      }
+      return
+    }
+
+    // Normal join — unlock audio context with BOTH methods (required by browsers)
     const el = audioElRef.current
     if (el) {
       el.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
@@ -465,6 +496,12 @@ function MeetingRoomInner() {
     } catch {}
     setJoined(true)
     updateState('clientJoin')
+    // Save client name on server
+    fetch('/api/meeting', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: meetingId, action: 'setClientName', clientName: displayName }),
+    }).catch(() => {})
     // Activate client webcam (video only, NEVER mic)
     navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(stream => {
       if (clientVideoRef.current) {
@@ -473,7 +510,7 @@ function MeetingRoomInner() {
       }
       setClientCameraOn(true)
     }).catch(() => { console.log('[CLIENT] No webcam available') })
-  }, [updateState])
+  }, [updateState, isTemplate, meetingId, displayName, router])
 
   // After joining: wait for video elements to mount, then start playback
   useEffect(() => {
@@ -657,7 +694,8 @@ function MeetingRoomInner() {
             {meetingData.participants.length} participant{meetingData.participants.length > 1 ? 's' : ''} IA + vous
           </p>
 
-          {!preloadDone && (
+          {/* Preload progress — only for sessions (not templates, since template redirects) */}
+          {!isTemplate && !preloadDone && (
             <div className="w-full max-w-[280px]">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[11px] text-gray-400">Preparation de la reunion...</span>
@@ -679,14 +717,14 @@ function MeetingRoomInner() {
 
           <button
             onClick={handleJoin}
-            disabled={!preloadDone}
+            disabled={!isTemplate && !preloadDone}
             className={`font-semibold px-10 py-3.5 rounded-lg text-[16px] transition-colors shadow-lg ${
-              !preloadDone
+              (!isTemplate && !preloadDone)
                 ? 'bg-gray-600 text-gray-400 cursor-not-allowed shadow-none'
                 : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-[#5b5fc7]/30'
             }`}
           >
-            {preloadDone ? 'Rejoindre la reunion' : 'Chargement...'}
+            {isTemplate ? 'Rejoindre la reunion' : (preloadDone ? 'Rejoindre la reunion' : 'Chargement...')}
           </button>
         </div>
       </div>

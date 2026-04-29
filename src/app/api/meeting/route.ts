@@ -13,6 +13,9 @@ export interface MeetingData {
   totalDuration: number
   excludedParticipants: string[] // participant IDs that have been kicked
   ended: boolean // true once meeting is definitively over
+  isTemplate?: boolean // true = original generated meeting (link to share)
+  templateId?: string // if this is a session, points to the original template
+  clientName?: string // name the client entered when joining
   state: {
     started: boolean
     startedAt: number | null
@@ -57,6 +60,7 @@ export async function POST(request: NextRequest) {
     totalDuration: body.totalDuration || 0,
     excludedParticipants: [],
     ended: false,
+    isTemplate: true, // original generated meeting = template
     state: {
       started: false,
       startedAt: null,
@@ -88,6 +92,9 @@ export async function GET(request: NextRequest) {
           participants: data.participants.map(p => ({ id: p.id, name: p.name, color: p.color, role: p.role })),
           excludedParticipants: data.excludedParticipants || [],
           ended: data.ended || false,
+          isTemplate: data.isTemplate || false,
+          templateId: data.templateId,
+          clientName: data.clientName,
           totalDuration: data.totalDuration,
           state: data.state,
         }
@@ -159,6 +166,30 @@ export async function PATCH(request: NextRequest) {
     case 'end':
       meeting.ended = true
       console.log(`[MEETING] ${id}: Meeting ended by admin`)
+      break
+    case 'clone': {
+      // Create a new session from a template meeting
+      const clientName = body.clientName || 'Client'
+      const sessionId = crypto.randomBytes(4).toString('hex')
+      const session: MeetingData = {
+        ...JSON.parse(JSON.stringify(meeting)),
+        id: sessionId,
+        createdAt: Date.now(),
+        adminKey: meeting.adminKey,
+        isTemplate: false,
+        templateId: meeting.id,
+        clientName,
+        excludedParticipants: [],
+        ended: false,
+        state: { started: false, startedAt: null, clientJoined: false },
+      }
+      saveMeeting(session)
+      console.log(`[MEETING] Cloned ${id} -> session ${sessionId} for ${clientName}`)
+      return NextResponse.json({ success: true, sessionId })
+    }
+    case 'setClientName':
+      meeting.clientName = body.clientName || 'Client'
+      console.log(`[MEETING] ${id}: Client name set to ${meeting.clientName}`)
       break
     default:
       return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })

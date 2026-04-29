@@ -18,6 +18,9 @@ interface MeetingSummary {
   participants: MeetingParticipant[]
   excludedParticipants?: string[]
   ended?: boolean
+  isTemplate?: boolean
+  templateId?: string
+  clientName?: string
   totalDuration?: number
   state?: {
     started?: boolean
@@ -112,6 +115,12 @@ export default function AdminMeetings() {
 
   const selected = meetings.find(m => m.id === selectedMeeting)
 
+  // Group: templates first, then their sessions underneath
+  const templates = meetings.filter(m => m.isTemplate || (!m.templateId && !m.isTemplate))
+  const sessions = meetings.filter(m => m.templateId && !m.isTemplate)
+  const getSessionsForTemplate = (templateId: string) => sessions.filter(s => s.templateId === templateId)
+  const activeSessions = sessions.filter(s => !s.ended && s.state?.clientJoined)
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0f0f0f] flex items-center justify-center">
@@ -127,7 +136,10 @@ export default function AdminMeetings() {
         <div className="flex items-center gap-3">
           <Users className="w-5 h-5 text-[#5b5fc7]" />
           <h1 className="text-lg font-bold">Admin Reunions</h1>
-          <span className="text-xs text-gray-500 bg-[#2a2a2a] px-2 py-0.5 rounded-full">{meetings.length} reunion{meetings.length !== 1 ? 's' : ''}</span>
+          <span className="text-xs text-gray-500 bg-[#2a2a2a] px-2 py-0.5 rounded-full">{templates.length} template{templates.length !== 1 ? 's' : ''}</span>
+          {activeSessions.length > 0 && (
+            <span className="text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/30">{activeSessions.length} session{activeSessions.length !== 1 ? 's' : ''} active{activeSessions.length !== 1 ? 's' : ''}</span>
+          )}
         </div>
         <button
           onClick={() => setRefreshKey(k => k + 1)}
@@ -141,71 +153,74 @@ export default function AdminMeetings() {
       <div className="flex h-[calc(100vh-52px)]">
         {/* Left: Meeting list */}
         <div className="w-[380px] border-r border-[#333] overflow-y-auto">
-          {meetings.length === 0 ? (
+          {templates.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-500">
               <Users className="w-12 h-12 mb-3 opacity-30" />
               <p className="text-sm">Aucune reunion</p>
               <p className="text-xs mt-1">Creez une reunion depuis la page de generation</p>
             </div>
           ) : (
-            <div className="p-3 space-y-2">
-              {meetings.map(m => {
-                const status = getStatus(m)
-                const excluded = m.excludedParticipants?.length || 0
+            <div className="p-3 space-y-4">
+              {templates.map(tmpl => {
+                const tmplSessions = getSessionsForTemplate(tmpl.id)
                 return (
-                  <div
-                    key={m.id}
-                    onClick={() => setSelectedMeeting(m.id)}
-                    className={`rounded-xl p-4 cursor-pointer transition-all border ${
-                      selectedMeeting === m.id
-                        ? 'bg-[#5b5fc7]/10 border-[#5b5fc7]/50'
-                        : 'bg-[#1a1a1a] border-[#2a2a2a] hover:border-[#444]'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-sm font-semibold truncate">{m.title}</h3>
-                        <p className="text-[11px] text-gray-500 mt-0.5">{formatDate(m.createdAt)}</p>
-                      </div>
-                      <div className={`flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded-full border ${status.color}`}>
-                        <div className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
-                        {status.label}
-                      </div>
+                  <div key={tmpl.id}>
+                    {/* Template header */}
+                    <div className="flex items-center gap-2 mb-2 px-1">
+                      <div className="w-2 h-2 rounded-full bg-[#5b5fc7]" />
+                      <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">{tmpl.title}</span>
+                      <span className="text-[10px] text-gray-600">{formatDate(tmpl.createdAt)}</span>
+                      <span className="text-[10px] text-gray-600 ml-auto">{tmpl.participantCount} IA &middot; {formatDuration(tmpl.totalDuration)}</span>
                     </div>
 
-                    <div className="flex items-center gap-3 text-[11px] text-gray-500">
-                      <span className="flex items-center gap-1">
-                        <Users className="w-3 h-3" />
-                        {m.participantCount}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {formatDuration(m.totalDuration)}
-                      </span>
-                      {excluded > 0 && (
-                        <span className="flex items-center gap-1 text-red-400">
-                          <UserX className="w-3 h-3" />
-                          {excluded} exclu{excluded > 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Participant avatars */}
-                    <div className="flex -space-x-1.5 mt-2.5">
-                      {m.participants.slice(0, 8).map(p => {
-                        const isExcluded = m.excludedParticipants?.includes(p.id)
-                        return (
-                          <div
-                            key={p.id}
-                            className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white border-2 border-[#1a1a1a] ${isExcluded ? 'opacity-30 grayscale' : ''}`}
-                            style={{ backgroundColor: p.color }}
-                            title={`${p.name}${isExcluded ? ' (exclu)' : ''}`}
-                          >
-                            {p.name.charAt(0)}
-                          </div>
-                        )
-                      })}
-                    </div>
+                    {/* Sessions for this template */}
+                    {tmplSessions.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-[#333] p-3 text-center">
+                        <p className="text-[11px] text-gray-600">Aucune session — en attente qu&apos;un client rejoigne</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {tmplSessions.map(s => {
+                          const status = getStatus(s)
+                          const excluded = s.excludedParticipants?.length || 0
+                          return (
+                            <div
+                              key={s.id}
+                              onClick={() => setSelectedMeeting(s.id)}
+                              className={`rounded-lg p-3 cursor-pointer transition-all border ${
+                                selectedMeeting === s.id
+                                  ? 'bg-[#5b5fc7]/10 border-[#5b5fc7]/50'
+                                  : 'bg-[#1a1a1a] border-[#2a2a2a] hover:border-[#444]'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="w-7 h-7 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
+                                    {(s.clientName || 'C').charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="text-sm font-medium truncate block">{s.clientName || 'Client'}</span>
+                                    <span className="text-[10px] text-gray-600">{formatDate(s.createdAt)}</span>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {excluded > 0 && (
+                                    <span className="flex items-center gap-1 text-[10px] text-red-400">
+                                      <UserX className="w-3 h-3" />
+                                      {excluded}
+                                    </span>
+                                  )}
+                                  <div className={`flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded-full border ${status.color}`}>
+                                    <div className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
+                                    {status.label}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -228,7 +243,10 @@ export default function AdminMeetings() {
               <div className="p-6 border-b border-[#333]">
                 <div className="flex items-center justify-between mb-3">
                   <div>
-                    <h2 className="text-xl font-bold">{selected.title}</h2>
+                    <h2 className="text-xl font-bold">
+                      {selected.clientName || selected.title}
+                      {selected.clientName && <span className="text-sm text-gray-500 ml-2 font-normal">({selected.title})</span>}
+                    </h2>
                     <p className="text-xs text-gray-500 mt-1">
                       ID: {selected.id} &middot; {formatDate(selected.createdAt)} &middot; Duree: {formatDuration(selected.totalDuration)}
                     </p>
