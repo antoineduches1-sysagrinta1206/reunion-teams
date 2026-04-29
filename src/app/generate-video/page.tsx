@@ -31,6 +31,11 @@ interface ScriptLine {
   id: string
   caseId: string
   text: string
+  mode: 'text' | 'audio'
+  audioFileName: string | null
+  audioPcmPath: string | null
+  audioDuration: number | null
+  audioUploading: boolean
 }
 
 interface GenStatus {
@@ -52,8 +57,9 @@ export default function ScenarioBuilder() {
     { id: 'p4', label: 'Case 4', color: COLORS[3], photo: null, photoPath: null, photoBase64: null, voiceId: '', clonedVoiceId: null, voiceCloneStatus: 'none', voiceCloneFileName: null },
   ])
   const [lines, setLines] = useState<ScriptLine[]>([
-    { id: 'l1', caseId: 'p1', text: '' },
+    { id: 'l1', caseId: 'p1', text: '', mode: 'text', audioFileName: null, audioPcmPath: null, audioDuration: null, audioUploading: false },
   ])
+  const lineAudioRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const [genStatus, setGenStatus] = useState<GenStatus | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [scenarioReady, setScenarioReady] = useState(false)
@@ -116,7 +122,7 @@ export default function ScenarioBuilder() {
   }
 
   const addLine = () => {
-    setLines(prev => [...prev, { id: `l${Date.now()}`, caseId: cases[0]?.id || 'p1', text: '' }])
+    setLines(prev => [...prev, { id: `l${Date.now()}`, caseId: cases[0]?.id || 'p1', text: '', mode: 'text', audioFileName: null, audioPcmPath: null, audioDuration: null, audioUploading: false }])
   }
 
   const removeLine = (id: string) => {
@@ -124,8 +130,36 @@ export default function ScenarioBuilder() {
     setLines(prev => prev.filter(l => l.id !== id))
   }
 
-  const updateLine = (id: string, field: 'caseId' | 'text', value: string) => {
+  const updateLine = (id: string, field: 'caseId' | 'text' | 'mode', value: string) => {
     setLines(prev => prev.map(l => l.id === id ? { ...l, [field]: value } : l))
+  }
+
+  const handleLineAudioUpload = async (lineId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setLines(prev => prev.map(l => l.id === lineId ? { ...l, audioUploading: true, audioFileName: file.name } : l))
+
+    try {
+      const formData = new FormData()
+      formData.append('audio', file)
+      formData.append('filename', `line-${lineId}-${Date.now()}`)
+
+      const res = await fetch('/api/upload-audio', { method: 'POST', body: formData })
+      const data = await res.json()
+
+      if (data.success) {
+        setLines(prev => prev.map(l => l.id === lineId ? {
+          ...l, audioUploading: false, audioPcmPath: data.pcmPath, audioDuration: data.duration,
+        } : l))
+        console.log(`[AUDIO] Line ${lineId}: uploaded ${file.name} → ${data.pcmPath} (${data.duration.toFixed(1)}s)`)
+      } else {
+        setLines(prev => prev.map(l => l.id === lineId ? { ...l, audioUploading: false, audioFileName: null } : l))
+        alert(`Erreur upload audio: ${data.error}`)
+      }
+    } catch (err) {
+      setLines(prev => prev.map(l => l.id === lineId ? { ...l, audioUploading: false, audioFileName: null } : l))
+      alert(`Erreur: ${err instanceof Error ? err.message : 'inconnue'}`)
+    }
   }
 
   const addCase = () => {
@@ -283,16 +317,16 @@ export default function ScenarioBuilder() {
   // Generate everything — 3-phase continuous video approach
   const handleGenerateAll = useCallback(async () => {
     cancelledRef.current = false // reset cancellation flag
-    // Validate
-    const usedCases = lines.filter(l => l.text.trim()).map(l => l.caseId).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
+    // Validate — a line is valid if it has text (text mode) or uploaded audio (audio mode)
+    const validLines = lines.filter(l => (l.mode === 'text' && l.text.trim()) || (l.mode === 'audio' && l.audioPcmPath))
+    const usedCases = validLines.map(l => l.caseId).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
     const missingPhoto = usedCases.filter((cid: string) => !cases.find(c => c.id === cid)?.photoBase64)
     if (missingPhoto.length > 0) {
       setGenStatus({ phase: 'error', current: 0, total: 0, detail: `Photo manquante pour: ${missingPhoto.join(', ')}`, log: [] })
       return
     }
-    const validLines = lines.filter(l => l.text.trim())
     if (validLines.length === 0) {
-      setGenStatus({ phase: 'error', current: 0, total: 0, detail: 'Ecris au moins une replique', log: [] })
+      setGenStatus({ phase: 'error', current: 0, total: 0, detail: 'Ajoute au moins une replique (texte ou audio)', log: [] })
       return
     }
 
@@ -310,37 +344,46 @@ export default function ScenarioBuilder() {
     }
 
     // ==============================================
-    // PHASE 1: Generate TTS for all speech segments
+    // PHASE 1: Generate TTS or use uploaded audio
     // ==============================================
-    setGenStatus({ phase: 'tts', current: 0, total: totalSteps, detail: 'Phase 1: Generation audio TTS...', log })
+    setGenStatus({ phase: 'tts', current: 0, total: totalSteps, detail: 'Phase 1: Preparation audio...', log })
 
     const ttsSegments: { participantId: string; pcmPath: string; duration: number; index: number }[] = []
     for (let i = 0; i < validLines.length; i++) {
       const line = validLines[i]
       const c = cases.find(cc => cc.id === line.caseId)!
       currentStep++
-      setGenStatus({ phase: 'tts', current: currentStep, total: totalSteps, detail: `TTS ${i + 1}/${validLines.length} (${c.label})...`, log })
-      addLog(`[TTS ${i + 1}] ${c.label}: "${line.text.slice(0, 40)}..."`)
 
-      try {
-        const res = await fetch('/api/generate-tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: line.text.trim(),
-            voiceId: c.clonedVoiceId || c.voiceId,
-            filename: `tts-${i + 1}-${line.caseId}-${Date.now()}.pcm`,
-          }),
-        })
-        const data = await res.json()
-        if (data.success) {
-          ttsSegments.push({ participantId: line.caseId, pcmPath: data.pcmPath, duration: data.duration, index: i })
-          addLog(`[TTS ${i + 1}] ${c.label}: OK (${data.duration.toFixed(1)}s)`)
-        } else {
-          addLog(`[TTS ${i + 1}] ${c.label}: ERREUR - ${data.error}`)
+      if (line.mode === 'audio' && line.audioPcmPath && line.audioDuration) {
+        // Audio already uploaded — use directly
+        setGenStatus({ phase: 'tts', current: currentStep, total: totalSteps, detail: `Audio ${i + 1}/${validLines.length} (${c.label}) — fichier pre-enregistre`, log })
+        addLog(`[AUDIO ${i + 1}] ${c.label}: ${line.audioFileName} (${line.audioDuration.toFixed(1)}s)`)
+        ttsSegments.push({ participantId: line.caseId, pcmPath: line.audioPcmPath, duration: line.audioDuration, index: i })
+      } else {
+        // Text mode — generate TTS
+        setGenStatus({ phase: 'tts', current: currentStep, total: totalSteps, detail: `TTS ${i + 1}/${validLines.length} (${c.label})...`, log })
+        addLog(`[TTS ${i + 1}] ${c.label}: "${line.text.slice(0, 40)}..."`)
+
+        try {
+          const res = await fetch('/api/generate-tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: line.text.trim(),
+              voiceId: c.clonedVoiceId || c.voiceId,
+              filename: `tts-${i + 1}-${line.caseId}-${Date.now()}.pcm`,
+            }),
+          })
+          const data = await res.json()
+          if (data.success) {
+            ttsSegments.push({ participantId: line.caseId, pcmPath: data.pcmPath, duration: data.duration, index: i })
+            addLog(`[TTS ${i + 1}] ${c.label}: OK (${data.duration.toFixed(1)}s)`)
+          } else {
+            addLog(`[TTS ${i + 1}] ${c.label}: ERREUR - ${data.error}`)
+          }
+        } catch (err) {
+          addLog(`[TTS ${i + 1}] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
         }
-      } catch (err) {
-        addLog(`[TTS ${i + 1}] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
       }
     }
 
@@ -898,7 +941,7 @@ export default function ScenarioBuilder() {
         <div style={{ flex: 1, padding: 20, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
             <div style={{ fontSize: 14, fontWeight: 700 }}>Script de la reunion</div>
-            <div style={{ fontSize: 10, color: '#888' }}>{lines.filter(l => l.text.trim()).length} repliques</div>
+            <div style={{ fontSize: 10, color: '#888' }}>{lines.filter(l => (l.mode === 'text' && l.text.trim()) || (l.mode === 'audio' && l.audioPcmPath)).length} repliques</div>
           </div>
 
           {lines.map((line, idx) => {
@@ -916,16 +959,52 @@ export default function ScenarioBuilder() {
                 >
                   {cases.map(cc => <option key={cc.id} value={cc.id}>{cc.label}</option>)}
                 </select>
-                <textarea
-                  value={line.text}
-                  onChange={e => updateLine(line.id, 'text', e.target.value)}
-                  placeholder="Ecris la replique ici..."
-                  rows={2}
+                {/* Mode toggle: text or audio */}
+                <select
+                  value={line.mode}
+                  onChange={e => updateLine(line.id, 'mode', e.target.value)}
                   style={{
-                    flex: 1, padding: '8px 10px', background: '#151515', border: '1px solid #2a2a2a',
-                    borderRadius: 6, color: 'white', fontSize: 12, resize: 'vertical', lineHeight: 1.4,
+                    width: 70, padding: '8px 4px', background: '#151515', border: '1px solid #333',
+                    borderRadius: 6, color: '#aaa', fontSize: 10, flexShrink: 0,
                   }}
-                />
+                >
+                  <option value="text">Texte</option>
+                  <option value="audio">Audio</option>
+                </select>
+                {/* Text mode: textarea */}
+                {line.mode === 'text' ? (
+                  <textarea
+                    value={line.text}
+                    onChange={e => updateLine(line.id, 'text', e.target.value)}
+                    placeholder="Ecris la replique ici..."
+                    rows={2}
+                    style={{
+                      flex: 1, padding: '8px 10px', background: '#151515', border: '1px solid #2a2a2a',
+                      borderRadius: 6, color: 'white', fontSize: 12, resize: 'vertical', lineHeight: 1.4,
+                    }}
+                  />
+                ) : (
+                  /* Audio mode: file upload */
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div
+                      onClick={() => !line.audioUploading && lineAudioRefs.current[line.id]?.click()}
+                      style={{
+                        padding: '8px 10px', background: '#151515', border: `1px solid ${line.audioPcmPath ? '#4ade80' : '#2a2a2a'}`,
+                        borderRadius: 6, cursor: line.audioUploading ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 14 }}>{line.audioPcmPath ? '✓' : '🎤'}</span>
+                      <span style={{ fontSize: 11, color: line.audioPcmPath ? '#4ade80' : '#888', flex: 1 }}>
+                        {line.audioUploading ? 'Conversion...' : line.audioFileName ? `${line.audioFileName} (${line.audioDuration?.toFixed(1)}s)` : 'Importer un fichier audio'}
+                      </span>
+                    </div>
+                    <input
+                      ref={el => { lineAudioRefs.current[line.id] = el }}
+                      type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm" style={{ display: 'none' }}
+                      onChange={e => handleLineAudioUpload(line.id, e)}
+                    />
+                  </div>
+                )}
                 <button onClick={() => removeLine(line.id)} style={{
                   padding: '8px', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14, flexShrink: 0,
                 }}>x</button>
