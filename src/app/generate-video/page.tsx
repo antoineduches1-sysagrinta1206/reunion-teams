@@ -410,7 +410,7 @@ export default function ScenarioBuilder() {
       // ================================================
       const MAX_CHUNK_SEC = 25
       const videoResults: Record<string, string> = {}
-      const VIDEO_PROMPT = 'Professional video conference webcam shot, head and shoulders, fixed camera. The person is on a live video call. ABSOLUTE RULE: During silent audio sections, the mouth stays COMPLETELY SHUT — lips pressed together, jaw locked, NO mouth movement at all. The person listens with a neutral closed-mouth expression: subtle head tilts, slow blinks, gentle breathing, slight nods. When audio speech starts, the person speaks with accurate lip sync. The mouth opens ONLY when speech audio plays. Silent = mouth closed, speaking = lip sync. Smooth transitions between states. Photorealistic webcam quality, natural office lighting.'
+      const VIDEO_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. When audio plays, the person speaks with natural lip sync. When audio is silent, the person is actively listening: mouth fully closed, natural eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. The person never stops moving naturally — continuous realistic human micro-movements throughout. Photorealistic quality, soft office lighting.'
 
       for (const pid of usedCases) {
         const c = cases.find(cc => cc.id === pid)!

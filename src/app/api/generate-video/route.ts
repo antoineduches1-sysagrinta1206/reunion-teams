@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
     // Pre-resolved audio base64 (sent directly from frontend — survives Railway redeploys)
     let preResolvedAudioB64 = rawAudioB64 || null
 
-    const videoPrompt = prompt || 'Professional video conference webcam shot, head and shoulders, fixed camera. The person is on a live video call. ABSOLUTE RULE: During silent audio sections, the mouth stays COMPLETELY SHUT — lips pressed together, jaw locked, NO mouth movement at all. The person listens with a neutral closed-mouth expression: subtle head tilts, slow blinks, gentle breathing, slight nods. When audio speech starts, the person speaks with accurate lip sync. The mouth opens ONLY when speech audio plays. Silent = mouth closed, speaking = lip sync. Smooth transitions between states. Photorealistic webcam quality, natural office lighting.'
+    const videoPrompt = prompt || 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. When audio plays, the person speaks with natural lip sync. When audio is silent, the person is actively listening: mouth fully closed, natural eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. The person never stops moving naturally — continuous realistic human micro-movements throughout. Photorealistic quality, soft office lighting.'
 
     // Step 1: Generate audio — pre-resolved base64, pre-built file, silent mode, or ElevenLabs TTS
     let audioB64: string
