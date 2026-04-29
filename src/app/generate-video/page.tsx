@@ -795,7 +795,15 @@ export default function ScenarioBuilder() {
         idleVideoUrl: l.idleVideoUrl || participantIdleVideos[l.id] || '',
         role: 'listener' as const,
       }))
-      const participantList = [...speakerList, ...listenerList]
+      // Interleave speakers and listeners so tiles alternate in the grid
+      // (looks like a real meeting — you look around, not just one zone)
+      const participantList: Array<{ id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string; role: 'speaker' | 'listener' }> = []
+      const s = [...speakerList]
+      const l = [...listenerList]
+      while (s.length > 0 || l.length > 0) {
+        if (s.length > 0) participantList.push(s.shift()!)
+        if (l.length > 0) participantList.push(l.shift()!)
+      }
 
       const res = await fetch('/api/meeting', {
         method: 'POST',
