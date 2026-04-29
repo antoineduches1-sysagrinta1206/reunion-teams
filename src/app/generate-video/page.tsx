@@ -782,7 +782,7 @@ export default function ScenarioBuilder() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: 'Reunion IA',
+          title: 'ACQ MEETING',
           participants: participantList,
           timeline: meetingTimeline,
           totalDuration: meetingDuration,

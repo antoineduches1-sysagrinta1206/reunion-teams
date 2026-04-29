@@ -322,30 +322,32 @@ function MeetingRoomInner() {
         // No status text — in a real meeting there's no "X parle..." indicator
         setScenarioStatus('')
       } else if (now > meetingData.totalDuration && !meetingEndedRef.current) {
-        // Meeting scenario ended — crossfade to idle videos, enable mic for live discussion
+        // Meeting scenario ended — EJECT CLIENT immediately
         meetingEndedRef.current = true
         setMeetingEnded(true)
-        console.log('[MEETING] Scenario ended — crossfading to idle videos, enabling mic')
+        console.log('[MEETING] Scenario ended — ejecting client')
+        // Stop ALL videos
         meetingData.participants.forEach(p => {
           const mainVid = videoRefs.current[p.id]
           const idleVid = idleVideoRefs.current[p.id]
-          if (mainVid) {
-            mainVid.volume = 0
-            mainVid.loop = false // main video stops at last frame (will be hidden by crossfade)
-          }
-          // Start playing idle video (preloaded, hidden behind main with opacity 0)
-          if (idleVid) {
-            idleVid.volume = 0
-            idleVid.muted = true
-            idleVid.loop = true // 30s idle video loops seamlessly
-            idleVid.currentTime = 0
-            idleVid.play().catch(() => {})
-            console.log(`[MEETING] ${p.name}: idle video started (crossfading in)`)
-          } else {
-            console.log(`[MEETING] ${p.name}: no idle video — main will freeze on last frame`)
-          }
+          if (mainVid) { mainVid.volume = 0; mainVid.pause() }
+          if (idleVid) { idleVid.pause() }
         })
-        setScenarioStatus('') // No visible status — keep it natural
+        // Stop client webcam
+        if (clientVideoRef.current?.srcObject) {
+          const tracks = (clientVideoRef.current.srcObject as MediaStream).getTracks()
+          tracks.forEach(t => t.stop())
+          clientVideoRef.current.srcObject = null
+        }
+        setClientCameraOn(false)
+        // Show the "meeting killed" overlay
+        setMeetingKilled(true)
+        // Notify server
+        fetch('/api/meeting', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: meetingId, action: 'end' }),
+        }).catch(() => {})
       } else if (meetingEndedRef.current) {
         setScenarioStatus('') // Stay silent — no indication
       } else {
