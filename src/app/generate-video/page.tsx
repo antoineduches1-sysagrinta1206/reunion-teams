@@ -444,6 +444,10 @@ export default function ScenarioBuilder() {
       duration: seg.duration,
     }))
 
+    const videoResults: Record<string, string> = {}
+    const idleResults: Record<string, string> = {}
+    let allIdleTargets: { id: string; label: string; photoBase64: string | null }[] = []
+
     try {
       const combRes = await fetch('/api/combine-audio', {
         method: 'POST',
@@ -468,7 +472,6 @@ export default function ScenarioBuilder() {
       // Idle videos don't depend on speaking results — start them immediately
       // ================================================
       const MAX_CHUNK_SEC = 25
-      const videoResults: Record<string, string> = {}
       const BASE_VIDEO_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. When audio plays, the person speaks with natural lip sync. When audio is silent, the person is actively listening: mouth fully closed, natural eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. The person never stops moving naturally — continuous realistic human micro-movements throughout. Photorealistic quality, soft office lighting.'
 
       // Build per-participant prompt enriched with their [expressions]
@@ -484,9 +487,7 @@ export default function ScenarioBuilder() {
       // --- LAUNCH IDLE GENERATION IN PARALLEL (non-blocking) ---
       const IDLE_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. The person is actively listening to others speaking. Mouth fully closed at all times, no lip movement. Natural micro-movements: eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. Continuous realistic human behavior throughout. Photorealistic quality, soft office lighting.'
       const IDLE_DURATION = 30 // 30s — loops seamlessly in meeting page
-      const idleResults: Record<string, string> = {}
-
-      const allIdleTargets: { id: string; label: string; photoBase64: string | null }[] = [
+      allIdleTargets = [
         ...usedCases.map(pid => {
           const c = cases.find(cc => cc.id === pid)!
           return { id: pid, label: c.label, photoBase64: c.photoBase64 }
@@ -667,10 +668,12 @@ export default function ScenarioBuilder() {
                 videoResults[pid] = concatData.videoUrl
                 addLog(`[VIDEO] ${c.label}: concatenation OK (${(concatData.size / 1024 / 1024).toFixed(1)} MB)`)
               } else {
-                addLog(`[VIDEO] ${c.label}: ERREUR concat - ${concatData.error}`)
+                addLog(`[VIDEO] ${c.label}: ERREUR concat - ${concatData.error} — utilisation du 1er chunk`)
+                videoResults[pid] = chunkVideoPaths[0]
               }
             } catch (err) {
-              addLog(`[VIDEO] ${c.label}: ERREUR concat - ${err instanceof Error ? err.message : 'inconnue'}`)
+              addLog(`[VIDEO] ${c.label}: ERREUR concat - ${err instanceof Error ? err.message : 'inconnue'} — utilisation du 1er chunk`)
+              videoResults[pid] = chunkVideoPaths[0]
             }
           } else {
             videoResults[pid] = chunkVideoPaths[0]
@@ -739,7 +742,7 @@ export default function ScenarioBuilder() {
         }
       }
 
-      // Save talking video results
+      // ALWAYS save talking video results — even if later steps fail
       setParticipantVideos(videoResults)
       setMeetingTimeline(timeline)
       setMeetingDuration(totalMeetingDuration)
@@ -747,25 +750,41 @@ export default function ScenarioBuilder() {
       const totalGenerated = Object.keys(videoResults).length
       addLog(`[OK] ${totalGenerated} videos continues generees (${totalMeetingDuration.toFixed(1)}s chacune)`)
 
+      // If we have at least 1 video, mark as ready NOW (before idle finishes)
+      if (totalGenerated > 0) {
+        setScenarioReady(true)
+      }
+
       // ================================================
       // Wait for idle videos (launched in parallel with PHASE 3)
       // ================================================
-      addLog(`[IDLE] Attente des videos d'ecoute en parallele...`)
-      setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps, detail: 'Finalisation videos ecoute...', log })
-      await Promise.all(idlePromises)
+      try {
+        addLog(`[IDLE] Attente des videos d'ecoute en parallele...`)
+        setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps, detail: 'Finalisation videos ecoute...', log })
+        await Promise.all(idlePromises)
 
-      // Store idle results: update participant idle videos + observer idle videos
-      setParticipantIdleVideos(idleResults)
-      setListeners(prev => prev.map(l => idleResults[l.id] ? { ...l, idleVideoUrl: idleResults[l.id] } : l))
-      addLog(`[IDLE] ${Object.keys(idleResults).length}/${allIdleTargets.length} videos idle generees`)
+        // Store idle results: update participant idle videos + observer idle videos
+        setParticipantIdleVideos(idleResults)
+        setListeners(prev => prev.map(l => idleResults[l.id] ? { ...l, idleVideoUrl: idleResults[l.id] } : l))
+        addLog(`[IDLE] ${Object.keys(idleResults).length}/${allIdleTargets.length} videos idle generees`)
+      } catch (idleErr) {
+        addLog(`[IDLE] ERREUR (non bloquante): ${idleErr instanceof Error ? idleErr.message : 'inconnue'}`)
+      }
 
-      setScenarioReady(totalGenerated > 0)
       setIsGenerating(false)
       setGenStatus({ phase: 'done', current: totalSteps, total: totalSteps, detail: `Pret ! ${totalGenerated} videos + ${Object.keys(idleResults).length} idle`, log })
     } catch (err) {
-      addLog(`[COMBINE] ERREUR: ${err instanceof Error ? err.message : 'inconnue'}`)
+      // CRITICAL: Save whatever we have even on error
+      if (Object.keys(videoResults).length > 0) {
+        setParticipantVideos(videoResults)
+        setScenarioReady(true)
+        addLog(`[ERREUR] ${err instanceof Error ? err.message : 'inconnue'} — ${Object.keys(videoResults).length} videos sauvees malgre l'erreur`)
+      } else {
+        addLog(`[ERREUR] ${err instanceof Error ? err.message : 'inconnue'}`)
+      }
       setIsGenerating(false)
-      setGenStatus({ phase: 'error', current: 0, total: 0, detail: 'Erreur construction audio', log })
+      const saved = Object.keys(videoResults).length
+      setGenStatus({ phase: saved > 0 ? 'done' : 'error', current: currentStep, total: totalSteps, detail: saved > 0 ? `${saved} videos sauvees (erreur partielle)` : 'Erreur construction audio', log })
     }
   }, [cases, lines, listeners])
 

@@ -79,15 +79,28 @@ export async function POST(request: NextRequest) {
     const fname = outputFilename || `concat-${Date.now()}.mp4`
     const outputPath = path.join(outDir, fname)
 
-    // Run ffmpeg concat
-    await execFileAsync(ffmpegPath, [
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', listFilePath,
-      '-c', 'copy',
-      '-y',
-      outputPath,
-    ], { timeout: 120000 })
+    // Run ffmpeg concat — try fast copy first, re-encode if it fails
+    try {
+      await execFileAsync(ffmpegPath, [
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', listFilePath,
+        '-c', 'copy',
+        '-y',
+        outputPath,
+      ], { timeout: 120000 })
+    } catch (copyErr: any) {
+      console.warn(`[CONCAT] -c copy failed (${copyErr.message?.slice(0, 100)}), re-encoding...`)
+      await execFileAsync(ffmpegPath, [
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', listFilePath,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-y',
+        outputPath,
+      ], { timeout: 300000 })
+    }
 
     // Cleanup list file
     try { fs.unlinkSync(listFilePath) } catch {}
