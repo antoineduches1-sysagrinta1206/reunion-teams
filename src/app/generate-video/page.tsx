@@ -539,208 +539,162 @@ export default function ScenarioBuilder() {
         }
       })
 
-      // --- PHASE 3: Generate speaking videos (sequential per participant) ---
+      // --- PHASE 3: Generate ALL speaking videos in FULL PARALLEL ---
+      // Step A: Split audio for ALL participants at once
+      addLog(`[VIDEO] Decoupage audio pour ${usedCases.length} participants...`)
+      setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: 'Phase 3: Decoupage audio...', log })
+
+      type ChunkJob = {
+        pid: string; label: string; chunkIndex: number; totalChunks: number;
+        audioB64: string | null; audioPath: string; photoBase64: string | null;
+        prompt: string; filename: string;
+      }
+      const allJobs: ChunkJob[] = []
+      const participantChunkCounts: Record<string, number> = {}
+
       for (const pid of usedCases) {
         const c = cases.find(cc => cc.id === pid)!
         const VIDEO_PROMPT = buildParticipantPrompt(pid)
-        currentStep++
         const audioTrack = combData.audioTracks[pid]
         const audioB64 = combData.audioBase64?.[pid] || null
 
-        // Check if we need to split into chunks
         if (totalMeetingDuration > MAX_CHUNK_SEC) {
-          addLog(`[VIDEO] ${c.label}: duree ${totalMeetingDuration.toFixed(0)}s > ${MAX_CHUNK_SEC}s, decoupage en chunks...`)
-          setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: `Phase 3: Decoupage audio ${c.label}...`, log })
-
-          // Split audio into chunks — pass base64 to survive Railway redeploys
-          const splitRes = await fetch('/api/split-audio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ wavPath: audioTrack, wavBase64: audioB64, maxChunkSeconds: MAX_CHUNK_SEC }),
-          })
-          const splitData = await splitRes.json()
-          if (!splitData.success) {
-            addLog(`[VIDEO] ${c.label}: ERREUR split - ${splitData.error}`)
-            continue
-          }
-
-          const chunks = splitData.chunks as { wavPath: string; duration: number; audioBase64?: string }[]
-          addLog(`[VIDEO] ${c.label}: ${chunks.length} chunks a generer`)
-
-          // Generate video for each chunk sequentially
-          const chunkVideoPaths: string[] = []
-          const chunkRemoteUrls: string[] = []
-          let allChunksOk = true
-
-          for (let ci = 0; ci < chunks.length; ci++) {
-            const chunk = chunks[ci]
-            addLog(`[VIDEO] ${c.label}: chunk ${ci + 1}/${chunks.length} (${chunk.duration.toFixed(1)}s)...`)
-            setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length}...`, log })
-
-            try {
-              let chunkSuccess = false
-              // Retry up to 3 times on transient Replicate errors
-              for (let retry = 0; retry < 3 && !chunkSuccess; retry++) {
-                if (cancelledRef.current) break
-                if (retry > 0) {
-                  const wait = retry * 15
-                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} retry ${retry}/3 dans ${wait}s...`)
-                  await new Promise(r => setTimeout(r, wait * 1000))
-                }
-
-                const chunkFilename = `chunk-${pid}-${ci}-${Date.now()}.mp4`
-                // Step A: Create prediction — pass audioBase64 directly (survives Railway redeploys)
-                const vRes = await fetch('/api/generate-video', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    audioBase64: chunk.audioBase64,
-                    audioPath: chunk.wavPath,
-                    photoBase64: c.photoBase64,
-                    prompt: VIDEO_PROMPT,
-                    filename: chunkFilename,
-                  }),
-                })
-                const vData = await vRes.json()
-                if (!vData.success || !vData.predictionId) {
-                  const errMsg = vData.error || 'unknown'
-                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR creation - ${errMsg}`)
-                  if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
-                    continue
-                  }
-                  allChunksOk = false
-                  break
-                }
-                addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} prediction ${vData.predictionId} creee, attente...`)
-
-                // Step B: Poll for completion
-                const pollResult = await pollPrediction(vData.predictionId, chunkFilename, (msg: string) => {
-                  setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} chunk ${ci + 1}/${chunks.length} - ${msg}` } : null)
-                })
-                if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-                  chunkVideoPaths.push(pollResult.videoUrl)
-                  chunkRemoteUrls.push(pollResult.replicateUrl || '')
-                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} OK`)
-                  chunkSuccess = true
-                } else {
-                  const errMsg = pollResult.error || 'echec'
-                  addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR - ${errMsg}`)
-                  if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
-                    continue
-                  }
-                  allChunksOk = false
-                  break
-                }
-              }
-              if (!chunkSuccess && allChunksOk) {
-                allChunksOk = false
-                break
-              }
-            } catch (err) {
-              addLog(`[VIDEO] ${c.label}: chunk ${ci + 1} ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
-              allChunksOk = false
-              break
-            }
-          }
-
-          if (!allChunksOk || chunkVideoPaths.length === 0) {
-            addLog(`[VIDEO] ${c.label}: generation echouee`)
-            continue
-          }
-
-          // Concatenate chunks into one video
-          if (chunkVideoPaths.length > 1) {
-            addLog(`[VIDEO] ${c.label}: concatenation ${chunkVideoPaths.length} chunks...`)
-            setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: `Phase 3: Concatenation ${c.label}...`, log })
-
-            try {
-              const concatRes = await fetch('/api/concat-videos', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  videoPaths: chunkVideoPaths,
-                  remoteUrls: chunkRemoteUrls,
-                  outputFilename: `meeting-${pid}-${Date.now()}.mp4`,
-                }),
-              })
-              const concatData = await concatRes.json()
-              if (concatData.success) {
-                videoResults[pid] = concatData.videoUrl
-                addLog(`[VIDEO] ${c.label}: concatenation OK (${(concatData.size / 1024 / 1024).toFixed(1)} MB)`)
-              } else {
-                addLog(`[VIDEO] ${c.label}: ERREUR concat - ${concatData.error} — utilisation du 1er chunk`)
-                videoResults[pid] = chunkVideoPaths[0]
-              }
-            } catch (err) {
-              addLog(`[VIDEO] ${c.label}: ERREUR concat - ${err instanceof Error ? err.message : 'inconnue'} — utilisation du 1er chunk`)
-              videoResults[pid] = chunkVideoPaths[0]
-            }
-          } else {
-            videoResults[pid] = chunkVideoPaths[0]
-          }
-
-        } else {
-          // Short video — generate in one shot (no chunking)
-          setGenStatus({ phase: 'video', current: currentStep, total: totalSteps, detail: `Phase 3: Video ${c.label} (${totalMeetingDuration.toFixed(0)}s)...`, log })
-          addLog(`[VIDEO] ${c.label}: generation video continue (${totalMeetingDuration.toFixed(0)}s)...`)
-
           try {
-            let shortSuccess = false
-            // Retry up to 3 times on transient Replicate errors
-            for (let retry = 0; retry < 3 && !shortSuccess; retry++) {
-              if (cancelledRef.current) break
-              if (retry > 0) {
-                const wait = retry * 15
-                addLog(`[VIDEO] ${c.label}: retry ${retry}/3 dans ${wait}s...`)
-                await new Promise(r => setTimeout(r, wait * 1000))
-              }
-
-              const shortFilename = `meeting-${pid}-${Date.now()}.mp4`
-              // Step A: Create prediction (fast)
-              const vRes = await fetch('/api/generate-video', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  audioBase64: audioB64,
-                  audioPath: audioTrack,
-                  photoBase64: c.photoBase64,
-                  prompt: VIDEO_PROMPT,
-                  filename: shortFilename,
-                }),
+            const splitRes = await fetch('/api/split-audio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ wavPath: audioTrack, wavBase64: audioB64, maxChunkSeconds: MAX_CHUNK_SEC }),
+            })
+            const splitData = await splitRes.json()
+            if (!splitData.success) {
+              addLog(`[VIDEO] ${c.label}: ERREUR split - ${splitData.error}`)
+              continue
+            }
+            const chunks = splitData.chunks as { wavPath: string; duration: number; audioBase64?: string }[]
+            participantChunkCounts[pid] = chunks.length
+            addLog(`[VIDEO] ${c.label}: ${chunks.length} chunks`)
+            for (let ci = 0; ci < chunks.length; ci++) {
+              allJobs.push({
+                pid, label: c.label, chunkIndex: ci, totalChunks: chunks.length,
+                audioB64: chunks[ci].audioBase64 || null, audioPath: chunks[ci].wavPath,
+                photoBase64: c.photoBase64, prompt: VIDEO_PROMPT,
+                filename: `chunk-${pid}-${ci}-${Date.now()}.mp4`,
               })
-              const vData = await vRes.json()
-              if (!vData.success || !vData.predictionId) {
-                const errMsg = vData.error || 'unknown'
-                addLog(`[VIDEO] ${c.label}: ERREUR creation - ${errMsg}`)
-                if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
-                  continue // retry
-                }
-                break
-              }
-              addLog(`[VIDEO] ${c.label}: prediction ${vData.predictionId} creee, attente...`)
-
-              // Step B: Poll for completion
-              const pollResult = await pollPrediction(vData.predictionId, shortFilename, (msg: string) => {
-                setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${c.label} - ${msg}` } : null)
-              })
-              if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-                videoResults[pid] = pollResult.videoUrl
-                addLog(`[VIDEO] ${c.label}: OK`)
-                shortSuccess = true
-              } else {
-                const errMsg = pollResult.error || 'echec'
-                addLog(`[VIDEO] ${c.label}: ERREUR - ${errMsg}`)
-                if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) {
-                  continue // retry
-                }
-                break
-              }
             }
           } catch (err) {
-            addLog(`[VIDEO] ${c.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
+            addLog(`[VIDEO] ${c.label}: ERREUR split - ${err instanceof Error ? err.message : 'inconnue'}`)
+          }
+        } else {
+          participantChunkCounts[pid] = 1
+          allJobs.push({
+            pid, label: c.label, chunkIndex: 0, totalChunks: 1,
+            audioB64, audioPath: audioTrack, photoBase64: c.photoBase64,
+            prompt: VIDEO_PROMPT, filename: `meeting-${pid}-${Date.now()}.mp4`,
+          })
+        }
+      }
+
+      addLog(`[VIDEO] ${allJobs.length} videos a generer en parallele (${usedCases.length} participants)...`)
+
+      // Step B: Fire ALL predictions in parallel + poll in parallel
+      let completedJobs = 0
+      const jobResults: Record<string, { videoUrl: string; replicateUrl: string; chunkIndex: number }[]> = {}
+      for (const pid of usedCases) jobResults[pid] = []
+
+      const generateOneChunk = async (job: ChunkJob): Promise<void> => {
+        const MAX_RETRIES = 3
+        for (let retry = 0; retry < MAX_RETRIES; retry++) {
+          if (cancelledRef.current) return
+          if (retry > 0) {
+            const wait = retry * 15
+            addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} retry ${retry}/${MAX_RETRIES} dans ${wait}s...`)
+            await new Promise(r => setTimeout(r, wait * 1000))
+          }
+
+          try {
+            const vRes = await fetch('/api/generate-video', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                audioBase64: job.audioB64,
+                audioPath: job.audioPath,
+                photoBase64: job.photoBase64,
+                prompt: job.prompt,
+                filename: job.filename,
+              }),
+            })
+            const vData = await vRes.json()
+            if (!vData.success || !vData.predictionId) {
+              const errMsg = vData.error || 'unknown'
+              addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} ERREUR - ${errMsg}`)
+              if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) continue
+              return // fatal error — skip chunk
+            }
+
+            const pollResult = await pollPrediction(vData.predictionId, job.filename, (msg: string) => {
+              setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${completedJobs}/${allJobs.length} OK — ${job.label} chunk ${job.chunkIndex + 1}: ${msg}` } : null)
+            })
+            if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+              jobResults[job.pid].push({ videoUrl: pollResult.videoUrl, replicateUrl: pollResult.replicateUrl || '', chunkIndex: job.chunkIndex })
+              completedJobs++
+              addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} OK (${completedJobs}/${allJobs.length})`)
+              setGenStatus(prev => prev ? { ...prev, detail: `Phase 3: ${completedJobs}/${allJobs.length} videos generees...` } : null)
+              return // success
+            }
+            const errMsg = pollResult.error || 'echec'
+            addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} ERREUR - ${errMsg}`)
+            if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) continue
+            return // fatal
+          } catch (err) {
+            addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
           }
         }
       }
+
+      // Launch ALL jobs in parallel
+      await Promise.all(allJobs.map(job => generateOneChunk(job)))
+      addLog(`[VIDEO] ${completedJobs}/${allJobs.length} chunks generes`)
+
+      // Step C: Concat chunks per participant (parallel)
+      const concatPromises = usedCases.map(async (pid) => {
+        const c = cases.find(cc => cc.id === pid)!
+        const results = jobResults[pid].sort((a, b) => a.chunkIndex - b.chunkIndex)
+        if (results.length === 0) {
+          addLog(`[VIDEO] ${c.label}: aucun chunk reussi`)
+          return
+        }
+
+        if (results.length === 1 || participantChunkCounts[pid] === 1) {
+          videoResults[pid] = results[0].videoUrl
+          return
+        }
+
+        // Need to concat
+        addLog(`[VIDEO] ${c.label}: concatenation ${results.length} chunks...`)
+        try {
+          const concatRes = await fetch('/api/concat-videos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              videoPaths: results.map(r => r.videoUrl),
+              remoteUrls: results.map(r => r.replicateUrl),
+              outputFilename: `meeting-${pid}-${Date.now()}.mp4`,
+            }),
+          })
+          const concatData = await concatRes.json()
+          if (concatData.success) {
+            videoResults[pid] = concatData.videoUrl
+            addLog(`[VIDEO] ${c.label}: concat OK (${(concatData.size / 1024 / 1024).toFixed(1)} MB)`)
+          } else {
+            addLog(`[VIDEO] ${c.label}: ERREUR concat — utilisation du 1er chunk`)
+            videoResults[pid] = results[0].videoUrl
+          }
+        } catch (err) {
+          addLog(`[VIDEO] ${c.label}: ERREUR concat — utilisation du 1er chunk`)
+          videoResults[pid] = results[0].videoUrl
+        }
+      })
+      await Promise.all(concatPromises)
 
       // ALWAYS save talking video results — even if later steps fail
       setParticipantVideos(videoResults)
