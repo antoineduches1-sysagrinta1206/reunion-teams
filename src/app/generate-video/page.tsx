@@ -48,6 +48,16 @@ interface GenStatus {
 
 const COLORS = ['#7B83EB', '#E74856', '#00A4EF', '#FFB900', '#9B59B6']
 
+// Extract [expressions] from script text and return clean text + expression list
+function parseExpressions(raw: string): { cleanText: string; expressions: string[] } {
+  const expressions: string[] = []
+  const cleanText = raw.replace(/\[([^\]]+)\]/g, (_match, expr) => {
+    expressions.push(expr.trim())
+    return '' // remove from TTS text
+  }).replace(/\s{2,}/g, ' ').trim()
+  return { cleanText, expressions }
+}
+
 export default function ScenarioBuilder() {
   const [voices, setVoices] = useState<Record<string, VoiceOption>>({})
   const [cases, setCases] = useState<CaseConfig[]>([
@@ -348,35 +358,41 @@ export default function ScenarioBuilder() {
     // ==============================================
     setGenStatus({ phase: 'tts', current: 0, total: totalSteps, detail: 'Phase 1: Preparation audio...', log })
 
-    const ttsSegments: { participantId: string; pcmPath: string; duration: number; index: number }[] = []
+    const ttsSegments: { participantId: string; pcmPath: string; duration: number; index: number; expressions: string[] }[] = []
     for (let i = 0; i < validLines.length; i++) {
       const line = validLines[i]
       const c = cases.find(cc => cc.id === line.caseId)!
       currentStep++
 
+      // Parse expressions [sourire] [colère] etc from text
+      const { cleanText, expressions } = line.mode === 'text' ? parseExpressions(line.text) : { cleanText: '', expressions: [] as string[] }
+      if (expressions.length > 0) {
+        addLog(`[EXPR ${i + 1}] ${c.label}: expressions detectees: ${expressions.join(', ')}`)
+      }
+
       if (line.mode === 'audio' && line.audioPcmPath && line.audioDuration) {
         // Audio already uploaded — use directly
         setGenStatus({ phase: 'tts', current: currentStep, total: totalSteps, detail: `Audio ${i + 1}/${validLines.length} (${c.label}) — fichier pre-enregistre`, log })
         addLog(`[AUDIO ${i + 1}] ${c.label}: ${line.audioFileName} (${line.audioDuration.toFixed(1)}s)`)
-        ttsSegments.push({ participantId: line.caseId, pcmPath: line.audioPcmPath, duration: line.audioDuration, index: i })
+        ttsSegments.push({ participantId: line.caseId, pcmPath: line.audioPcmPath, duration: line.audioDuration, index: i, expressions })
       } else {
-        // Text mode — generate TTS
+        // Text mode — generate TTS (with [expressions] stripped)
         setGenStatus({ phase: 'tts', current: currentStep, total: totalSteps, detail: `TTS ${i + 1}/${validLines.length} (${c.label})...`, log })
-        addLog(`[TTS ${i + 1}] ${c.label}: "${line.text.slice(0, 40)}..."`)
+        addLog(`[TTS ${i + 1}] ${c.label}: "${cleanText.slice(0, 40)}..."`)
 
         try {
           const res = await fetch('/api/generate-tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              text: line.text.trim(),
+              text: cleanText,
               voiceId: c.clonedVoiceId || c.voiceId,
               filename: `tts-${i + 1}-${line.caseId}-${Date.now()}.pcm`,
             }),
           })
           const data = await res.json()
           if (data.success) {
-            ttsSegments.push({ participantId: line.caseId, pcmPath: data.pcmPath, duration: data.duration, index: i })
+            ttsSegments.push({ participantId: line.caseId, pcmPath: data.pcmPath, duration: data.duration, index: i, expressions })
             addLog(`[TTS ${i + 1}] ${c.label}: OK (${data.duration.toFixed(1)}s)`)
           } else {
             addLog(`[TTS ${i + 1}] ${c.label}: ERREUR - ${data.error}`)
@@ -448,15 +464,84 @@ export default function ScenarioBuilder() {
       addLog(`[COMBINE] ${Object.keys(combData.audioTracks).length} pistes audio creees`)
 
       // ================================================
-      // PHASE 3: Generate continuous video per participant
-      // Supports chunking for long videos (>25s)
+      // PHASE 3+4: Generate speaking videos + idle videos IN PARALLEL
+      // Idle videos don't depend on speaking results — start them immediately
       // ================================================
       const MAX_CHUNK_SEC = 25
       const videoResults: Record<string, string> = {}
-      const VIDEO_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. When audio plays, the person speaks with natural lip sync. When audio is silent, the person is actively listening: mouth fully closed, natural eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. The person never stops moving naturally — continuous realistic human micro-movements throughout. Photorealistic quality, soft office lighting.'
+      const BASE_VIDEO_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. When audio plays, the person speaks with natural lip sync. When audio is silent, the person is actively listening: mouth fully closed, natural eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. The person never stops moving naturally — continuous realistic human micro-movements throughout. Photorealistic quality, soft office lighting.'
 
+      // Build per-participant prompt enriched with their [expressions]
+      const buildParticipantPrompt = (pid: string): string => {
+        const participantExpressions = ttsSegments
+          .filter(s => s.participantId === pid && s.expressions.length > 0)
+          .flatMap(s => s.expressions)
+        if (participantExpressions.length === 0) return BASE_VIDEO_PROMPT
+        const exprStr = Array.from(new Set(participantExpressions)).join(', ')
+        return `${BASE_VIDEO_PROMPT} During speech, the person expresses these emotions/actions: ${exprStr}.`
+      }
+
+      // --- LAUNCH IDLE GENERATION IN PARALLEL (non-blocking) ---
+      const IDLE_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. The person is actively listening to others speaking. Mouth fully closed at all times, no lip movement. Natural micro-movements: eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. Continuous realistic human behavior throughout. Photorealistic quality, soft office lighting.'
+      const IDLE_DURATION = 30 // 30s — loops seamlessly in meeting page
+      const idleResults: Record<string, string> = {}
+
+      const allIdleTargets: { id: string; label: string; photoBase64: string | null }[] = [
+        ...usedCases.map(pid => {
+          const c = cases.find(cc => cc.id === pid)!
+          return { id: pid, label: c.label, photoBase64: c.photoBase64 }
+        }),
+        ...listeners.filter(l => l.photoBase64).map(l => ({
+          id: l.id, label: l.label, photoBase64: l.photoBase64,
+        })),
+      ]
+
+      addLog(`[IDLE] Lancement parallele: ${allIdleTargets.length} videos d'ecoute (${IDLE_DURATION}s)...`)
+
+      // Fire all idle generations in parallel — don't await yet
+      const idlePromises = allIdleTargets.map(async (target) => {
+        try {
+          for (let retry = 0; retry < 3; retry++) {
+            if (cancelledRef.current) return
+            if (retry > 0) await new Promise(r => setTimeout(r, retry * 10000))
+
+            const idleFilename = `idle-${target.id}-${Date.now()}.mp4`
+            const vRes = await fetch('/api/generate-video', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                photoBase64: target.photoBase64,
+                silent: true,
+                silentDuration: IDLE_DURATION,
+                prompt: IDLE_PROMPT,
+                filename: idleFilename,
+              }),
+            })
+            const vData = await vRes.json()
+            if (!vData.success || !vData.predictionId) {
+              addLog(`[IDLE] ${target.label}: ERREUR creation - ${vData.error || 'unknown'}`)
+              continue
+            }
+
+            const pollResult = await pollPrediction(vData.predictionId, idleFilename, (msg: string) => {
+              addLog(`[IDLE] ${target.label}: ${msg}`)
+            })
+            if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+              idleResults[target.id] = pollResult.videoUrl
+              addLog(`[IDLE] ${target.label}: OK`)
+              return
+            }
+            addLog(`[IDLE] ${target.label}: ERREUR - ${pollResult.error || 'echec'}`)
+          }
+        } catch (err) {
+          addLog(`[IDLE] ${target.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
+        }
+      })
+
+      // --- PHASE 3: Generate speaking videos (sequential per participant) ---
       for (const pid of usedCases) {
         const c = cases.find(cc => cc.id === pid)!
+        const VIDEO_PROMPT = buildParticipantPrompt(pid)
         currentStep++
         const audioTrack = combData.audioTracks[pid]
         const audioB64 = combData.audioBase64?.[pid] || null
@@ -663,92 +748,26 @@ export default function ScenarioBuilder() {
       addLog(`[OK] ${totalGenerated} videos continues generees (${totalMeetingDuration.toFixed(1)}s chacune)`)
 
       // ================================================
-      // PHASE 4: Generate idle/listening videos per participant
-      // Short silent videos (25s) that loop when scenario ends
+      // Wait for idle videos (launched in parallel with PHASE 3)
       // ================================================
-      const IDLE_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. The person is actively listening to others speaking. Mouth fully closed at all times, no lip movement. Natural micro-movements: eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. Continuous realistic human behavior throughout. Photorealistic quality, soft office lighting.'
-      const IDLE_DURATION = 120 // 2 minutes — long enough to cover post-meeting listening
-      const idleResults: Record<string, string> = {}
-
-      // Generate idle for ALL: speakers + observers
-      const allIdleTargets: { id: string; label: string; photoBase64: string | null }[] = [
-        ...Object.keys(videoResults).map(pid => {
-          const c = cases.find(cc => cc.id === pid)!
-          return { id: pid, label: c.label, photoBase64: c.photoBase64 }
-        }),
-        ...listeners.filter(l => l.photoBase64).map(l => ({
-          id: l.id, label: l.label, photoBase64: l.photoBase64,
-        })),
-      ]
-
-      addLog(`[IDLE] Generation des videos d'ecoute (${IDLE_DURATION}s) pour ${allIdleTargets.length} participants...`)
-
-      for (const target of allIdleTargets) {
-        if (cancelledRef.current) break
-        addLog(`[IDLE] ${target.label}: generation video idle...`)
-        setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps + allIdleTargets.length, detail: `Phase 4: Video ecoute ${target.label}...`, log })
-
-        try {
-          let idleSuccess = false
-          for (let retry = 0; retry < 3 && !idleSuccess; retry++) {
-            if (cancelledRef.current) break
-            if (retry > 0) {
-              const wait = retry * 10
-              addLog(`[IDLE] ${target.label}: retry ${retry}/3 dans ${wait}s...`)
-              await new Promise(r => setTimeout(r, wait * 1000))
-            }
-
-            const idleFilename = `idle-${target.id}-${Date.now()}.mp4`
-            const vRes = await fetch('/api/generate-video', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                photoBase64: target.photoBase64,
-                silent: true,
-                silentDuration: IDLE_DURATION,
-                prompt: IDLE_PROMPT,
-                filename: idleFilename,
-              }),
-            })
-            const vData = await vRes.json()
-            if (!vData.success || !vData.predictionId) {
-              addLog(`[IDLE] ${target.label}: ERREUR creation - ${vData.error || 'unknown'}`)
-              continue
-            }
-            addLog(`[IDLE] ${target.label}: prediction ${vData.predictionId} creee, attente...`)
-
-            const pollResult = await pollPrediction(vData.predictionId, idleFilename, (msg: string) => {
-              setGenStatus(prev => prev ? { ...prev, detail: `Phase 4: ${target.label} ecoute - ${msg}` } : null)
-            })
-            if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-              idleResults[target.id] = pollResult.videoUrl
-              addLog(`[IDLE] ${target.label}: OK`)
-              idleSuccess = true
-            } else {
-              addLog(`[IDLE] ${target.label}: ERREUR - ${pollResult.error || 'echec'}`)
-            }
-          }
-        } catch (err) {
-          addLog(`[IDLE] ${target.label}: ERREUR - ${err instanceof Error ? err.message : 'inconnue'}`)
-        }
-        currentStep++
-      }
+      addLog(`[IDLE] Attente des videos d'ecoute en parallele...`)
+      setGenStatus({ phase: 'idle', current: currentStep, total: totalSteps, detail: 'Finalisation videos ecoute...', log })
+      await Promise.all(idlePromises)
 
       // Store idle results: update participant idle videos + observer idle videos
       setParticipantIdleVideos(idleResults)
-      // Update listeners state with their generated idle video URLs
       setListeners(prev => prev.map(l => idleResults[l.id] ? { ...l, idleVideoUrl: idleResults[l.id] } : l))
       addLog(`[IDLE] ${Object.keys(idleResults).length}/${allIdleTargets.length} videos idle generees`)
 
       setScenarioReady(totalGenerated > 0)
       setIsGenerating(false)
-      setGenStatus({ phase: 'done', current: totalSteps + Object.keys(videoResults).length, total: totalSteps + Object.keys(videoResults).length, detail: `Pret ! ${totalGenerated} videos + ${Object.keys(idleResults).length} idle`, log })
+      setGenStatus({ phase: 'done', current: totalSteps, total: totalSteps, detail: `Pret ! ${totalGenerated} videos + ${Object.keys(idleResults).length} idle`, log })
     } catch (err) {
       addLog(`[COMBINE] ERREUR: ${err instanceof Error ? err.message : 'inconnue'}`)
       setIsGenerating(false)
       setGenStatus({ phase: 'error', current: 0, total: 0, detail: 'Erreur construction audio', log })
     }
-  }, [cases, lines])
+  }, [cases, lines, listeners])
 
   // Launch — create meeting room with continuous videos + timeline
   const launchInMeeting = async () => {
@@ -989,7 +1008,7 @@ export default function ScenarioBuilder() {
                   <textarea
                     value={line.text}
                     onChange={e => updateLine(line.id, 'text', e.target.value)}
-                    placeholder="Ecris la replique ici..."
+                    placeholder="Ecris la replique ici... [sourire] [colere] [rire] pour les expressions"
                     rows={2}
                     style={{
                       flex: 1, padding: '8px 10px', background: '#151515', border: '1px solid #2a2a2a',

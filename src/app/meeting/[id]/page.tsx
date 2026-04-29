@@ -271,7 +271,7 @@ function MeetingRoomInner() {
           if (idleVid) {
             idleVid.volume = 0
             idleVid.muted = true
-            idleVid.loop = false // 2 min idle — no loop needed
+            idleVid.loop = true // 30s idle video loops seamlessly
             idleVid.currentTime = 0
             idleVid.play().catch(() => {})
             console.log(`[MEETING] ${p.name}: idle video started (crossfading in)`)
@@ -524,7 +524,7 @@ function MeetingRoomInner() {
             idleVid.play().catch(() => {})
             console.log(`[WATCHDOG] ${p.name}: idle restarted (listener)`)
           } else if (meetingEndedRef.current) {
-            idleVid.loop = false // Speakers: no loop after meeting ends
+            idleVid.loop = true // 30s idle loops seamlessly after meeting ends
             idleVid.muted = true
             idleVid.play().catch(() => {})
             console.log(`[WATCHDOG] ${p.name}: idle restarted (post-meeting)`)
