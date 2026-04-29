@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react'
 import { useParams } from 'next/navigation'
 import MeetingToolbar from '../../../components/MeetingToolbar'
-import { Mic, MicOff, MoreHorizontal, X } from 'lucide-react'
+import { Mic, MicOff, MoreHorizontal, X, StopCircle } from 'lucide-react'
 
 interface MeetingParticipant {
   id: string
@@ -26,6 +26,8 @@ interface MeetingData {
   participants: MeetingParticipant[]
   timeline: TimelineSegment[]
   totalDuration: number
+  excludedParticipants?: string[]
+  ended?: boolean
 }
 
 function MeetingRoomInner() {
@@ -48,6 +50,8 @@ function MeetingRoomInner() {
   const meetingEndedRef = useRef(false)
   const clientVideoRef = useRef<HTMLVideoElement>(null)
   const [clientCameraOn, setClientCameraOn] = useState(false)
+  const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set())
+  const [meetingKilled, setMeetingKilled] = useState(false) // admin ended the meeting permanently
 
   // Preload: download videos fully into memory (blob URLs) before playback
   const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
@@ -79,6 +83,59 @@ function MeetingRoomInner() {
         setLoading(false)
       })
   }, [meetingId])
+
+  // Poll for admin changes (exclusions + meeting end) every 3s
+  useEffect(() => {
+    if (!meetingId || !joined) return
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/meeting?id=${meetingId}`)
+        const data = await res.json()
+        if (!data.success || !data.meeting) return
+        const m = data.meeting
+
+        // Update excluded participants
+        const newExcluded = new Set<string>(m.excludedParticipants || [])
+        setExcludedIds(prev => {
+          // Only update if changed
+          if (prev.size !== newExcluded.size || !Array.from(newExcluded).every(id => prev.has(id))) {
+            // Mute + pause excluded participants
+            newExcluded.forEach(pid => {
+              const vid = videoRefs.current[pid]
+              if (vid) { vid.volume = 0; vid.pause() }
+              const idle = idleVideoRefs.current[pid]
+              if (idle) { idle.pause() }
+            })
+            return newExcluded
+          }
+          return prev
+        })
+
+        // Admin ended the meeting permanently
+        if (m.ended && !meetingKilled) {
+          setMeetingKilled(true)
+          // Stop ALL videos
+          if (meetingData) {
+            meetingData.participants.forEach(p => {
+              const vid = videoRefs.current[p.id]
+              if (vid) { vid.volume = 0; vid.pause() }
+              const idle = idleVideoRefs.current[p.id]
+              if (idle) { idle.pause() }
+            })
+          }
+          // Stop client webcam
+          if (clientVideoRef.current?.srcObject) {
+            const tracks = (clientVideoRef.current.srcObject as MediaStream).getTracks()
+            tracks.forEach(t => t.stop())
+            clientVideoRef.current.srcObject = null
+          }
+          setClientCameraOn(false)
+          console.log('[ADMIN] Meeting ended by admin — everything stopped')
+        }
+      } catch {}
+    }, 3000)
+    return () => clearInterval(poll)
+  }, [meetingId, joined, meetingKilled, meetingData])
 
   // Preload videos into memory as blob URLs — zero network dependency during playback
   // STRATEGY: Join button enables as soon as MAIN videos are ready. Idle videos download in background.
@@ -210,6 +267,15 @@ function MeetingRoomInner() {
       }
 
       meetingData.participants.forEach(p => {
+        // Excluded participants: force silence + no playback
+        if (excludedIds.has(p.id)) {
+          const vid = videoRefs.current[p.id]
+          if (vid) { vid.volume = 0; if (!vid.paused) vid.pause() }
+          const idle = idleVideoRefs.current[p.id]
+          if (idle && !idle.paused) idle.pause()
+          return
+        }
+
         const isSpeakerRole = (p.role || 'speaker') === 'speaker'
         if (isSpeakerRole) {
           // Speaker: manage main video volume + keep it playing
@@ -640,6 +706,27 @@ function MeetingRoomInner() {
     <div className="h-screen flex flex-col bg-[#201f1f] overflow-hidden">
       <audio ref={audioElRef} />
 
+      {/* Meeting ended by admin — full overlay */}
+      {meetingKilled && (
+        <div className="absolute inset-0 z-50 bg-[#0f0f0f]/95 flex items-center justify-center">
+          <div className="text-center max-w-md px-6">
+            <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-red-500/10 flex items-center justify-center">
+              <StopCircle className="w-10 h-10 text-red-400" />
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-3">Reunion terminee</h2>
+            <p className="text-gray-400 text-sm mb-6">
+              Cette reunion a ete terminee par l&apos;administrateur. Toutes les cameras et micros ont ete coupes.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white font-medium px-6 py-3 rounded-lg transition-colors"
+            >
+              Rafraichir la page
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top bar */}
       <div className="h-[44px] sm:h-[48px] bg-[#292828] flex items-center px-2 sm:px-3 border-b border-[#383838]">
         <div className="w-[40px] sm:w-[68px] flex items-center justify-center">
@@ -704,7 +791,8 @@ function MeetingRoomInner() {
               {/* AI Participant tiles — ALL cameras always visible like a real meeting */}
               {meetingData.participants.map((p) => {
                 const isSpeakerRole = (p.role || 'speaker') === 'speaker'
-                const isSpeaking = !meetingEnded && speakingId === p.id && isSpeakerRole
+                const isExcluded = excludedIds.has(p.id)
+                const isSpeaking = !meetingEnded && !isExcluded && speakingId === p.id && isSpeakerRole
                 return (
                   <div
                     key={p.id}
@@ -713,50 +801,61 @@ function MeetingRoomInner() {
                     }`}
                     style={{ backgroundColor: '#1a1a1a', aspectRatio: '16/9' }}
                   >
-                    {/* Main video (speakers) — ALWAYS visible, plays continuously */}
-                    {isSpeakerRole && (
-                      <video
-                        ref={el => { videoRefs.current[p.id] = el }}
-                        src={videoBlobUrls[p.id] || p.videoUrl}
-                        preload="auto"
-                        playsInline
-                        loop={false}
-                        crossOrigin="anonymous"
-                        className="absolute inset-0 w-full h-full object-cover"
-                        style={{ opacity: 1 }}
-                      />
-                    )}
-                    {/* Idle video — for listeners: always visible. For speakers: hidden behind main, shown after scenario ends */}
-                    {(idleBlobUrls[p.id] || (!isSpeakerRole && p.idleVideoUrl)) && (
-                      <video
-                        ref={el => { idleVideoRefs.current[p.id] = el }}
-                        src={idleBlobUrls[p.id] || p.idleVideoUrl}
-                        preload="auto"
-                        playsInline
-                        muted
-                        loop
-                        crossOrigin="anonymous"
-                        className="absolute inset-0 w-full h-full object-cover"
-                        style={{
-                          // Listeners: idle always on top. Speakers: idle on top only after scenario ends
-                          opacity: !isSpeakerRole ? 1 : (meetingEnded ? 1 : 0),
-                          zIndex: !isSpeakerRole ? 2 : (meetingEnded ? 2 : 0),
-                          transition: 'opacity 1s ease-in-out',
-                          pointerEvents: 'none',
-                        }}
-                      />
-                    )}
-                    {/* Fallback for listeners with no idle video yet */}
-                    {!idleBlobUrls[p.id] && !isSpeakerRole && !p.idleVideoUrl && (
+                    {/* EXCLUDED: show initials only — no video, no audio */}
+                    {isExcluded ? (
                       <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a1a]">
-                        <div className="w-16 h-16 rounded-full flex items-center justify-center text-white text-xl font-bold" style={{ background: p.color }}>
-                          {p.name.charAt(0)}
+                        <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full flex items-center justify-center text-white text-2xl font-bold" style={{ background: p.color }}>
+                          {p.name.split(' ').map(w => w.charAt(0)).join('').slice(0, 2)}
                         </div>
                       </div>
+                    ) : (
+                      <>
+                        {/* Main video (speakers) — ALWAYS visible, plays continuously */}
+                        {isSpeakerRole && (
+                          <video
+                            ref={el => { videoRefs.current[p.id] = el }}
+                            src={videoBlobUrls[p.id] || p.videoUrl}
+                            preload="auto"
+                            playsInline
+                            loop={false}
+                            crossOrigin="anonymous"
+                            className="absolute inset-0 w-full h-full object-cover"
+                            style={{ opacity: 1 }}
+                          />
+                        )}
+                        {/* Idle video — for listeners: always visible. For speakers: hidden behind main, shown after scenario ends */}
+                        {(idleBlobUrls[p.id] || (!isSpeakerRole && p.idleVideoUrl)) && (
+                          <video
+                            ref={el => { idleVideoRefs.current[p.id] = el }}
+                            src={idleBlobUrls[p.id] || p.idleVideoUrl}
+                            preload="auto"
+                            playsInline
+                            muted
+                            loop
+                            crossOrigin="anonymous"
+                            className="absolute inset-0 w-full h-full object-cover"
+                            style={{
+                              // Listeners: idle always on top. Speakers: idle on top only after scenario ends
+                              opacity: !isSpeakerRole ? 1 : (meetingEnded ? 1 : 0),
+                              zIndex: !isSpeakerRole ? 2 : (meetingEnded ? 2 : 0),
+                              transition: 'opacity 1s ease-in-out',
+                              pointerEvents: 'none',
+                            }}
+                          />
+                        )}
+                        {/* Fallback for listeners with no idle video yet */}
+                        {!idleBlobUrls[p.id] && !isSpeakerRole && !p.idleVideoUrl && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a1a]">
+                            <div className="w-16 h-16 rounded-full flex items-center justify-center text-white text-xl font-bold" style={{ background: p.color }}>
+                              {p.name.charAt(0)}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {/* Loading overlay */}
-                    {videoLoading[p.id] && (
+                    {videoLoading[p.id] && !isExcluded && (
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#1a1a1a]/80">
                         <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
                         <span className="text-[11px] text-gray-400 mt-2">Chargement...</span>

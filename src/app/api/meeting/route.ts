@@ -11,6 +11,8 @@ export interface MeetingData {
   participants: { id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string; role?: 'speaker' | 'listener' }[]
   timeline: { participantId: string; startTime: number; endTime: number }[]
   totalDuration: number
+  excludedParticipants: string[] // participant IDs that have been kicked
+  ended: boolean // true once meeting is definitively over
   state: {
     started: boolean
     startedAt: number | null
@@ -53,6 +55,8 @@ export async function POST(request: NextRequest) {
     participants: body.participants || [],
     timeline: body.timeline || [],
     totalDuration: body.totalDuration || 0,
+    excludedParticipants: [],
+    ended: false,
     state: {
       started: false,
       startedAt: null,
@@ -64,17 +68,43 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ success: true, meetingId: id, adminKey })
 }
 
-// GET: retrieve meeting data by ID
+// GET: retrieve meeting data by ID, or list all meetings if no ID
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')
-  if (!id) {
-    return NextResponse.json({ error: 'Missing meeting id' }, { status: 400 })
+
+  // List all meetings (for admin page)
+  if (!id || id === 'list') {
+    ensureDir()
+    const files = fs.readdirSync(MEETINGS_DIR).filter(f => f.endsWith('.json'))
+    const meetings = files.map(f => {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(MEETINGS_DIR, f), 'utf-8')) as MeetingData
+        return {
+          id: data.id,
+          title: data.title,
+          createdAt: data.createdAt,
+          participantCount: data.participants.length,
+          participants: data.participants.map(p => ({ id: p.id, name: p.name, color: p.color, role: p.role })),
+          excludedParticipants: data.excludedParticipants || [],
+          ended: data.ended || false,
+          totalDuration: data.totalDuration,
+          state: data.state,
+        }
+      } catch { return null }
+    }).filter(Boolean)
+    // Sort newest first
+    meetings.sort((a: any, b: any) => b.createdAt - a.createdAt)
+    return NextResponse.json({ success: true, meetings })
   }
+
   const meeting = loadMeeting(id)
   if (!meeting) {
     return NextResponse.json({ error: 'Meeting not found' }, { status: 404 })
   }
+  // Backfill for older meetings missing new fields
+  if (!meeting.excludedParticipants) meeting.excludedParticipants = []
+  if (meeting.ended === undefined) meeting.ended = false
   const safeData = { ...meeting, adminKey: undefined }
   return NextResponse.json({ success: true, meeting: safeData })
 }
@@ -91,6 +121,10 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Meeting not found' }, { status: 404 })
   }
 
+  // Backfill for older meetings
+  if (!meeting.excludedParticipants) meeting.excludedParticipants = []
+  if (meeting.ended === undefined) meeting.ended = false
+
   switch (action) {
     case 'clientJoin':
       meeting.state.clientJoined = true
@@ -103,6 +137,28 @@ export async function PATCH(request: NextRequest) {
     case 'clientLeave':
       meeting.state.clientJoined = false
       console.log(`[MEETING] ${id}: Client left`)
+      break
+    case 'kick': {
+      const participantId = body.participantId
+      if (!participantId) return NextResponse.json({ error: 'Missing participantId' }, { status: 400 })
+      if (!meeting.excludedParticipants.includes(participantId)) {
+        meeting.excludedParticipants.push(participantId)
+      }
+      const pName = meeting.participants.find(p => p.id === participantId)?.name || participantId
+      console.log(`[MEETING] ${id}: Kicked ${pName}`)
+      break
+    }
+    case 'restore': {
+      const participantId = body.participantId
+      if (!participantId) return NextResponse.json({ error: 'Missing participantId' }, { status: 400 })
+      meeting.excludedParticipants = meeting.excludedParticipants.filter((pid: string) => pid !== participantId)
+      const pName = meeting.participants.find(p => p.id === participantId)?.name || participantId
+      console.log(`[MEETING] ${id}: Restored ${pName}`)
+      break
+    }
+    case 'end':
+      meeting.ended = true
+      console.log(`[MEETING] ${id}: Meeting ended by admin`)
       break
     default:
       return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
