@@ -145,13 +145,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 2: Create prediction on Replicate with retry (upstream errors are transient)
-    console.log(`[GEN] Step 2: Creating OmniHuman 1.5 prediction...`)
+    // Using WAN 2.2 S2V — better lip-sync and silence handling than OmniHuman
+    console.log(`[GEN] Step 2: Creating WAN 2.2 S2V prediction...`)
 
     const MAX_RETRIES = 3
     let prediction: any = null
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const createRes = await fetch('https://api.replicate.com/v1/models/bytedance/omni-human-1.5/predictions', {
+        const createRes = await fetch('https://api.replicate.com/v1/models/wan-video/wan-2.2-s2v/predictions', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${REPLICATE_TOKEN}`,
