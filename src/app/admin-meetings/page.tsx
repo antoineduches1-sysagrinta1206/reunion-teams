@@ -16,13 +16,13 @@ interface MeetingSummary {
   createdAt: number
   participantCount: number
   participants: MeetingParticipant[]
-  excludedParticipants: string[]
-  ended: boolean
-  totalDuration: number
-  state: {
-    started: boolean
-    startedAt: number | null
-    clientJoined: boolean
+  excludedParticipants?: string[]
+  ended?: boolean
+  totalDuration?: number
+  state?: {
+    started?: boolean
+    startedAt?: number | null
+    clientJoined?: boolean
   }
 }
 
@@ -96,7 +96,8 @@ export default function AdminMeetings() {
     return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
 
-  const formatDuration = (s: number) => {
+  const formatDuration = (s: number | undefined) => {
+    if (!s) return '0:00'
     const m = Math.floor(s / 60)
     const sec = Math.floor(s % 60)
     return `${m}:${sec.toString().padStart(2, '0')}`
@@ -104,8 +105,8 @@ export default function AdminMeetings() {
 
   const getStatus = (m: MeetingSummary) => {
     if (m.ended) return { label: 'Terminee', color: 'bg-gray-500', dot: 'bg-gray-400' }
-    if (m.state.clientJoined) return { label: 'En cours', color: 'bg-green-500/20 text-green-400 border-green-500/30', dot: 'bg-green-400 animate-pulse' }
-    if (m.state.started) return { label: 'Demarree', color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30', dot: 'bg-yellow-400' }
+    if (m.state?.clientJoined) return { label: 'En cours', color: 'bg-green-500/20 text-green-400 border-green-500/30', dot: 'bg-green-400 animate-pulse' }
+    if (m.state?.started) return { label: 'Demarree', color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30', dot: 'bg-yellow-400' }
     return { label: 'En attente', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30', dot: 'bg-blue-400' }
   }
 
