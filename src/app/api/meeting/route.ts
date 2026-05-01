@@ -90,6 +90,7 @@ export async function GET(request: NextRequest) {
           createdAt: data.createdAt,
           participantCount: data.participants.length,
           participants: data.participants.map(p => ({ id: p.id, name: p.name, color: p.color, role: p.role })),
+          timeline: data.timeline || [],
           excludedParticipants: data.excludedParticipants || [],
           ended: data.ended || false,
           isTemplate: data.isTemplate || false,

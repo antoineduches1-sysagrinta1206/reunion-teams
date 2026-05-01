@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
-import { Users, UserX, UserCheck, StopCircle, RefreshCw, Clock, ExternalLink } from 'lucide-react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { Users, UserX, UserCheck, StopCircle, RefreshCw, Clock, ExternalLink, Mic, Volume2 } from 'lucide-react'
 
 interface MeetingParticipant {
   id: string
@@ -10,12 +10,19 @@ interface MeetingParticipant {
   role?: 'speaker' | 'listener'
 }
 
+interface TimelineSegment {
+  participantId: string
+  startTime: number
+  endTime: number
+}
+
 interface MeetingSummary {
   id: string
   title: string
   createdAt: number
   participantCount: number
   participants: MeetingParticipant[]
+  timeline?: TimelineSegment[]
   excludedParticipants?: string[]
   ended?: boolean
   isTemplate?: boolean
@@ -35,6 +42,8 @@ export default function AdminMeetings() {
   const [selectedMeeting, setSelectedMeeting] = useState<string | null>(null)
   const [actionLog, setActionLog] = useState<string[]>([])
   const [refreshKey, setRefreshKey] = useState(0)
+  const [liveElapsed, setLiveElapsed] = useState(0) // seconds since meeting started
+  const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const addLog = (msg: string) => {
     setActionLog(prev => [...prev.slice(-30), `[${new Date().toLocaleTimeString()}] ${msg}`])
@@ -60,6 +69,26 @@ export default function AdminMeetings() {
     const t = setInterval(() => setRefreshKey(k => k + 1), 5000)
     return () => clearInterval(t)
   }, [])
+
+  // Live elapsed timer — ticks every 500ms for selected meeting
+  useEffect(() => {
+    if (liveTimerRef.current) clearInterval(liveTimerRef.current)
+    const sel = meetings.find(m => m.id === selectedMeeting)
+    if (!sel?.state?.startedAt || sel.ended) {
+      setLiveElapsed(0)
+      return
+    }
+    const update = () => setLiveElapsed((Date.now() - sel.state!.startedAt!) / 1000)
+    update()
+    liveTimerRef.current = setInterval(update, 500)
+    return () => { if (liveTimerRef.current) clearInterval(liveTimerRef.current) }
+  }, [selectedMeeting, meetings])
+
+  // Helper: find who is speaking at a given time
+  const getCurrentSpeaker = (timeline: TimelineSegment[], elapsed: number): string | null => {
+    const seg = timeline.find(s => elapsed >= s.startTime && elapsed <= s.endTime)
+    return seg ? seg.participantId : null
+  }
 
   const handleKick = async (meetingId: string, participantId: string, name: string) => {
     const res = await fetch('/api/meeting', {
@@ -280,7 +309,89 @@ export default function AdminMeetings() {
                 )}
               </div>
 
-              {/* Participants grid */}
+              {/* Live timeline bar + current speaker */}
+              {selected.timeline && selected.timeline.length > 0 && (
+                <div className="px-6 py-4 border-b border-[#333]">
+                  {/* Current position + speaker */}
+                  {selected.state?.startedAt && !selected.ended && (() => {
+                    const currentSpeakerId = getCurrentSpeaker(selected.timeline!, liveElapsed)
+                    const currentSpeaker = currentSpeakerId ? selected.participants.find(p => p.id === currentSpeakerId) : null
+                    const nextSeg = selected.timeline!.find(s => s.startTime > liveElapsed)
+                    const nextSpeaker = nextSeg ? selected.participants.find(p => p.id === nextSeg.participantId) : null
+                    return (
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="flex items-center gap-2 bg-[#1a1a1a] rounded-lg px-3 py-2 border border-[#333]">
+                          <Clock className="w-3.5 h-3.5 text-[#5b5fc7]" />
+                          <span className="text-sm font-mono font-bold text-white">{formatDuration(liveElapsed)}</span>
+                          <span className="text-[10px] text-gray-600">/ {formatDuration(selected.totalDuration)}</span>
+                        </div>
+                        {currentSpeaker ? (
+                          <div className="flex items-center gap-2 bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2">
+                            <Volume2 className="w-3.5 h-3.5 text-green-400 animate-pulse" />
+                            <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white" style={{ backgroundColor: currentSpeaker.color }}>
+                              {currentSpeaker.name.charAt(0)}
+                            </div>
+                            <span className="text-sm font-medium text-green-400">{currentSpeaker.name} parle</span>
+                            {!selected.excludedParticipants?.includes(currentSpeaker.id) && (
+                              <button
+                                onClick={() => handleKick(selected.id, currentSpeaker.id, currentSpeaker.name)}
+                                className="ml-1 flex items-center gap-1 bg-red-600 hover:bg-red-700 text-white text-[10px] font-medium px-2 py-1 rounded transition-colors"
+                              >
+                                <UserX className="w-3 h-3" />
+                                Exclure maintenant
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-gray-600">Silence</span>
+                        )}
+                        {nextSpeaker && !currentSpeaker && nextSeg && (
+                          <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
+                            Prochain : <span className="font-medium text-gray-400">{nextSpeaker.name}</span> dans {Math.max(0, Math.ceil(nextSeg.startTime - liveElapsed))}s
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+
+                  {/* Visual timeline bar */}
+                  <div className="relative">
+                    <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <Mic className="w-3 h-3" /> Ordre de parole
+                    </div>
+                    <div className="relative h-8 bg-[#1a1a1a] rounded-lg overflow-hidden border border-[#2a2a2a]">
+                      {selected.timeline!.map((seg, i) => {
+                        const p = selected.participants.find(pp => pp.id === seg.participantId)
+                        if (!p) return null
+                        const totalDur = selected.totalDuration || 1
+                        const left = (seg.startTime / totalDur) * 100
+                        const width = ((seg.endTime - seg.startTime) / totalDur) * 100
+                        const isExcluded = selected.excludedParticipants?.includes(p.id)
+                        const isActive = selected.state?.startedAt && !selected.ended && liveElapsed >= seg.startTime && liveElapsed <= seg.endTime
+                        return (
+                          <div
+                            key={i}
+                            className={`absolute top-0 h-full flex items-center justify-center text-[9px] font-bold text-white transition-all cursor-default ${isExcluded ? 'opacity-30 grayscale' : ''} ${isActive ? 'ring-2 ring-white z-10' : ''}`}
+                            style={{ left: `${left}%`, width: `${Math.max(width, 0.5)}%`, backgroundColor: p.color }}
+                            title={`${p.name}: ${formatDuration(seg.startTime)} → ${formatDuration(seg.endTime)}`}
+                          >
+                            {width > 4 ? p.name.split(' ')[0] : p.name.charAt(0)}
+                          </div>
+                        )
+                      })}
+                      {/* Live cursor */}
+                      {selected.state?.startedAt && !selected.ended && selected.totalDuration && liveElapsed <= selected.totalDuration && (
+                        <div
+                          className="absolute top-0 w-0.5 h-full bg-white z-20 shadow-[0_0_4px_rgba(255,255,255,0.8)]"
+                          style={{ left: `${(liveElapsed / selected.totalDuration) * 100}%` }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Participants grid with timeline info */}
               <div className="flex-1 overflow-y-auto p-6">
                 <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
                   Participants ({selected.participants.length})
@@ -288,21 +399,33 @@ export default function AdminMeetings() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {selected.participants.map(p => {
                     const isExcluded = selected.excludedParticipants?.includes(p.id)
+                    const pSegments = (selected.timeline || []).filter(s => s.participantId === p.id)
+                    const totalSpeakTime = pSegments.reduce((sum, s) => sum + (s.endTime - s.startTime), 0)
+                    const isSpeakingNow = selected.state?.startedAt && !selected.ended && getCurrentSpeaker(selected.timeline || [], liveElapsed) === p.id
                     return (
                       <div
                         key={p.id}
                         className={`rounded-xl p-4 border transition-all ${
-                          isExcluded
-                            ? 'bg-red-500/5 border-red-500/20'
-                            : 'bg-[#1a1a1a] border-[#2a2a2a]'
+                          isSpeakingNow && !isExcluded
+                            ? 'bg-green-500/5 border-green-500/30 ring-1 ring-green-500/20'
+                            : isExcluded
+                              ? 'bg-red-500/5 border-red-500/20'
+                              : 'bg-[#1a1a1a] border-[#2a2a2a]'
                         }`}
                       >
                         <div className="flex items-center gap-3">
-                          <div
-                            className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg flex-shrink-0 ${isExcluded ? 'opacity-40 grayscale' : ''}`}
-                            style={{ backgroundColor: p.color }}
-                          >
-                            {p.name.charAt(0)}
+                          <div className="relative flex-shrink-0">
+                            <div
+                              className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg ${isExcluded ? 'opacity-40 grayscale' : ''}`}
+                              style={{ backgroundColor: p.color }}
+                            >
+                              {p.name.charAt(0)}
+                            </div>
+                            {isSpeakingNow && !isExcluded && (
+                              <div className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+                                <Volume2 className="w-2.5 h-2.5 text-white" />
+                              </div>
+                            )}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
@@ -312,10 +435,24 @@ export default function AdminMeetings() {
                               {isExcluded && (
                                 <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded-full font-medium">EXCLU</span>
                               )}
+                              {isSpeakingNow && !isExcluded && (
+                                <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded-full font-medium animate-pulse">EN DIRECT</span>
+                              )}
                             </div>
                             <span className="text-[11px] text-gray-500">
                               {(p.role || 'speaker') === 'speaker' ? 'Acteur cle' : 'Observateur'}
+                              {pSegments.length > 0 && ` · ${pSegments.length} intervention${pSegments.length > 1 ? 's' : ''} · ${formatDuration(totalSpeakTime)}`}
                             </span>
+                            {/* Mini timeline for this participant */}
+                            {pSegments.length > 0 && (
+                              <div className="flex gap-1 mt-1.5 flex-wrap">
+                                {pSegments.map((seg, i) => (
+                                  <span key={i} className="text-[9px] bg-[#2a2a2a] text-gray-500 px-1.5 py-0.5 rounded font-mono">
+                                    {formatDuration(seg.startTime)}→{formatDuration(seg.endTime)}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                           <div>
                             {isExcluded ? (

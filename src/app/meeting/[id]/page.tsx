@@ -296,6 +296,14 @@ function MeetingRoomInner() {
           if (vid.paused || vid.readyState < 2) {
             vid.play().catch(() => {})
           }
+          // DRIFT CORRECTION: if video drifts >0.5s from expected time, resync it
+          if (vid.duration > 0 && !vid.paused && now <= vid.duration) {
+            const drift = Math.abs(vid.currentTime - now)
+            if (drift > 0.5) {
+              console.log(`[SYNC] ${p.name}: drift=${drift.toFixed(2)}s — resyncing to ${now.toFixed(1)}s`)
+              vid.currentTime = now
+            }
+          }
         } else {
           // Listener: keep idle video playing (always muted)
           const idleVid = idleVideoRefs.current[p.id]
