@@ -47,7 +47,7 @@ function MeetingRoomInner() {
   const [showParticipants, setShowParticipants] = useState(false)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
   const [scenarioStatus, setScenarioStatus] = useState('')
-  const [displayName, setDisplayName] = useState('Client')
+  const [displayName, setDisplayName] = useState('')
   const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({})
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [meetingEnded, setMeetingEnded] = useState(false)
@@ -84,12 +84,12 @@ function MeetingRoomInner() {
             setMeetingData(data.meeting)
           }
         } else {
-          setLoadError(data.error || 'Reunion introuvable')
+          setLoadError(data.error || 'Meeting not found')
         }
         setLoading(false)
       })
       .catch(() => {
-        setLoadError('Erreur de connexion')
+        setLoadError('Connection error')
         setLoading(false)
       })
   }, [meetingId])
@@ -672,7 +672,7 @@ function MeetingRoomInner() {
       <div className="h-screen flex items-center justify-center bg-[#1a1a2e]">
         <div className="flex flex-col items-center gap-4">
           <div className="w-10 h-10 border-4 border-[#5b5fc7] border-t-transparent rounded-full animate-spin" />
-          <p className="text-gray-400 text-sm">Chargement de la reunion...</p>
+          <p className="text-gray-400 text-sm">Loading meeting...</p>
         </div>
       </div>
     )
@@ -684,8 +684,8 @@ function MeetingRoomInner() {
       <div className="h-screen flex items-center justify-center bg-[#1a1a2e]">
         <div className="flex flex-col items-center gap-4">
           <div className="text-4xl">❌</div>
-          <h1 className="text-xl font-semibold text-white">Reunion introuvable</h1>
-          <p className="text-gray-400 text-sm">{loadError || 'Ce lien de reunion est invalide ou a expire.'}</p>
+          <h1 className="text-xl font-semibold text-white">Meeting not found</h1>
+          <p className="text-gray-400 text-sm">{loadError || 'This meeting link is invalid or has expired.'}</p>
         </div>
       </div>
     )
@@ -693,64 +693,85 @@ function MeetingRoomInner() {
 
   // --- JOIN / LOBBY SCREEN ---
   if (!joined) {
+    const canJoin = isTemplate || preloadDone
     return (
       <div className="h-screen flex items-center justify-center bg-[#1a1a2e]">
         <audio ref={audioElRef} />
-        <div className="flex flex-col items-center gap-6 max-w-md text-center px-4">
-          <svg viewBox="0 0 24 24" className="w-16 h-16" fill="none">
-            <path d="M20.5 6h-3.5V4.5A1.5 1.5 0 0015.5 3h-7A1.5 1.5 0 007 4.5V6H3.5A1.5 1.5 0 002 7.5v9A1.5 1.5 0 003.5 18H7v1.5A1.5 1.5 0 008.5 21h7a1.5 1.5 0 001.5-1.5V18h3.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.5 6z" fill="#5b5fc7"/>
-            <path d="M9.5 8h5v2h-2v5h-1v-5h-2V8z" fill="white"/>
-          </svg>
-
-          <h1 className="text-2xl font-semibold text-white">{meetingData.title}</h1>
-
-          <div className="flex flex-wrap justify-center gap-2">
-            {meetingData.participants.map(p => (
-              <div key={p.id} className="flex items-center gap-2 bg-[#2d2c2c] rounded-full px-3 py-1">
-                <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white" style={{ background: p.color }}>
-                  {p.name.charAt(0)}
-                </div>
-                <span className="text-xs text-gray-300">{p.name}</span>
-              </div>
-            ))}
-          </div>
-
-          <p className="text-gray-400 text-sm">
-            {meetingData.participants.length} participant{meetingData.participants.length > 1 ? 's' : ''} IA + vous
-          </p>
-
-          {/* Preload progress — only for sessions (not templates, since template redirects) */}
-          {!isTemplate && !preloadDone && (
-            <div className="w-full max-w-[280px]">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] text-gray-400">Preparation de la reunion...</span>
-                <span className="text-[11px] text-[#5b5fc7] font-medium">{preloadProgress}%</span>
-              </div>
-              <div className="w-full h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden">
-                <div className="h-full bg-[#5b5fc7] rounded-full transition-all duration-300" style={{ width: `${preloadProgress}%` }} />
+        <div className="w-full max-w-[440px] mx-4">
+          {/* Teams-style card */}
+          <div className="bg-[#242424] rounded-2xl shadow-2xl overflow-hidden border border-[#333]">
+            {/* Header */}
+            <div className="bg-[#5b5fc7] px-6 py-5 flex items-center gap-3">
+              <svg viewBox="0 0 24 24" className="w-8 h-8 flex-shrink-0" fill="none">
+                <path d="M20.5 6h-3.5V4.5A1.5 1.5 0 0015.5 3h-7A1.5 1.5 0 007 4.5V6H3.5A1.5 1.5 0 002 7.5v9A1.5 1.5 0 003.5 18H7v1.5A1.5 1.5 0 008.5 21h7a1.5 1.5 0 001.5-1.5V18h3.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.5 6z" fill="white"/>
+                <path d="M9.5 8h5v2h-2v5h-1v-5h-2V8z" fill="#5b5fc7"/>
+              </svg>
+              <div>
+                <h1 className="text-white font-bold text-lg leading-tight">{meetingData.title}</h1>
+                <p className="text-white/60 text-xs mt-0.5">{meetingData.participants.length + 1} participants</p>
               </div>
             </div>
-          )}
 
-          <input
-            type="text"
-            value={displayName}
-            onChange={e => setDisplayName(e.target.value)}
-            placeholder="Votre nom..."
-            className="w-full max-w-[260px] bg-[#201f1f] text-white text-center text-sm rounded-lg px-4 py-2.5 outline-none border border-[#383838] focus:border-[#5b5fc7] placeholder-gray-500"
-          />
+            <div className="p-6 space-y-5">
+              {/* Participants list */}
+              <div>
+                <p className="text-[11px] text-gray-500 uppercase tracking-wider font-semibold mb-3">People in this meeting</p>
+                <div className="space-y-2">
+                  {meetingData.participants.map(p => (
+                    <div key={p.id} className="flex items-center gap-3 bg-[#1a1a1a] rounded-lg px-3 py-2.5">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0" style={{ background: p.color }}>
+                        {p.name.charAt(0)}
+                      </div>
+                      <span className="text-sm text-white font-medium">{p.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
-          <button
-            onClick={handleJoin}
-            disabled={!isTemplate && !preloadDone}
-            className={`font-semibold px-10 py-3.5 rounded-lg text-[16px] transition-colors shadow-lg ${
-              (!isTemplate && !preloadDone)
-                ? 'bg-gray-600 text-gray-400 cursor-not-allowed shadow-none'
-                : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-[#5b5fc7]/30'
-            }`}
-          >
-            {isTemplate ? 'Rejoindre la reunion' : (preloadDone ? 'Rejoindre la reunion' : 'Chargement...')}
-          </button>
+              {/* Divider */}
+              <div className="border-t border-[#333]" />
+
+              {/* Name input */}
+              <div>
+                <p className="text-[11px] text-gray-500 uppercase tracking-wider font-semibold mb-2">Enter your name to join</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                    placeholder="First and last name"
+                    className="flex-1 bg-[#1a1a1a] text-white text-sm rounded-lg px-4 py-3 outline-none border border-[#383838] focus:border-[#5b5fc7] placeholder-gray-600 transition-colors"
+                  />
+                </div>
+              </div>
+
+              {/* Preload progress — only for sessions (not templates, since template redirects) */}
+              {!isTemplate && !preloadDone && (
+                <div className="w-full">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] text-gray-400">Setting up meeting...</span>
+                    <span className="text-[11px] text-[#5b5fc7] font-medium">{preloadProgress}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-[#1a1a1a] rounded-full overflow-hidden">
+                    <div className="h-full bg-[#5b5fc7] rounded-full transition-all duration-300" style={{ width: `${preloadProgress}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Join button */}
+              <button
+                onClick={handleJoin}
+                disabled={!canJoin || !displayName.trim()}
+                className={`w-full font-semibold py-3.5 rounded-lg text-[15px] transition-all ${
+                  (!canJoin || !displayName.trim())
+                    ? 'bg-[#333] text-gray-500 cursor-not-allowed'
+                    : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-lg shadow-[#5b5fc7]/20 hover:shadow-[#5b5fc7]/40'
+                }`}
+              >
+                {!canJoin ? 'Loading...' : 'Join meeting'}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     )
@@ -778,15 +799,15 @@ function MeetingRoomInner() {
             <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-red-500/10 flex items-center justify-center">
               <StopCircle className="w-10 h-10 text-red-400" />
             </div>
-            <h2 className="text-2xl font-bold text-white mb-3">Reunion terminee</h2>
+            <h2 className="text-2xl font-bold text-white mb-3">Meeting ended</h2>
             <p className="text-gray-400 text-sm mb-6">
-              Cette reunion a ete terminee par l&apos;administrateur. Toutes les cameras et micros ont ete coupes.
+              This meeting has been ended. All cameras and microphones have been turned off.
             </p>
             <button
               onClick={() => window.location.reload()}
               className="bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white font-medium px-6 py-3 rounded-lg transition-colors"
             >
-              Rafraichir la page
+              Refresh page
             </button>
           </div>
         </div>
@@ -826,7 +847,7 @@ function MeetingRoomInner() {
           className="w-full bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium py-2 px-4 flex items-center justify-center gap-2 transition-colors"
         >
           <Mic className="w-4 h-4" />
-          Cliquez ici pour activer le son
+          Click here to enable audio
         </button>
       )}
 
@@ -970,7 +991,7 @@ function MeetingRoomInner() {
                     <div className="rounded-full p-0.5 bg-red-600">
                       <MicOff className="w-3 h-3 text-white" />
                     </div>
-                    <span className="text-[13px] text-white font-medium drop-shadow-sm">{displayName} (Vous)</span>
+                    <span className="text-[13px] text-white font-medium drop-shadow-sm">{displayName} (You)</span>
                   </div>
                 </div>
               </div>
@@ -982,7 +1003,7 @@ function MeetingRoomInner() {
             <div className="absolute right-0 top-[44px] sm:top-[48px] bottom-0 w-full sm:w-[320px] sm:relative sm:top-0 z-30 bg-[#2d2c2c] border-l border-[#383838] flex flex-col">
               <div className="flex items-center justify-between px-4 py-3 border-b border-[#383838]">
                 <h3 className="text-[14px] font-semibold text-white">
-                  {showParticipants ? `Participants (${totalTiles})` : 'Conversation'}
+                  {showParticipants ? `Participants (${totalTiles})` : 'Chat'}
                 </h3>
                 <button onClick={() => { setShowChat(false); setShowParticipants(false) }} className="hover:bg-[#3a3a3a] p-1 rounded">
                   <X className="w-4 h-4 text-gray-400" />
@@ -997,7 +1018,7 @@ function MeetingRoomInner() {
                       </div>
                       <span className="text-[13px] text-gray-300">{p.name}</span>
                       {(p.role || 'speaker') === 'listener' && (
-                        <span className="text-[10px] text-gray-500 ml-auto">Observateur</span>
+                        <span className="text-[10px] text-gray-500 ml-auto">Observer</span>
                       )}
                     </div>
                   ))}
@@ -1005,17 +1026,17 @@ function MeetingRoomInner() {
                     <div className="w-8 h-8 rounded-full bg-[#5b5fc7] flex items-center justify-center text-sm font-semibold text-white flex-shrink-0">
                       {displayName.charAt(0).toUpperCase()}
                     </div>
-                    <span className="text-[13px] text-gray-300">{displayName} (Vous)</span>
+                    <span className="text-[13px] text-gray-300">{displayName} (You)</span>
                   </div>
                 </div>
               )}
               {showChat && (
                 <div className="flex-1 flex flex-col">
                   <div className="flex-1 overflow-y-auto p-3">
-                    <div className="text-center text-gray-500 text-[13px] mt-10">Aucun message</div>
+                    <div className="text-center text-gray-500 text-[13px] mt-10">No messages</div>
                   </div>
                   <div className="p-3 border-t border-[#383838]">
-                    <input type="text" placeholder="Saisissez un message..." className="w-full bg-[#201f1f] text-gray-300 text-[13px] rounded-md px-3 py-2 outline-none border border-[#383838] focus:border-[#5b5fc7] placeholder-gray-600" />
+                    <input type="text" placeholder="Type a message..." className="w-full bg-[#201f1f] text-gray-300 text-[13px] rounded-md px-3 py-2 outline-none border border-[#383838] focus:border-[#5b5fc7] placeholder-gray-600" />
                   </div>
                 </div>
               )}
@@ -1033,7 +1054,7 @@ export default function MeetingRoom() {
       <div className="h-screen flex items-center justify-center bg-[#1a1a2e]">
         <div className="flex flex-col items-center gap-4">
           <div className="w-10 h-10 border-4 border-[#5b5fc7] border-t-transparent rounded-full animate-spin" />
-          <p className="text-gray-400 text-sm">Chargement de la reunion...</p>
+          <p className="text-gray-400 text-sm">Loading meeting...</p>
         </div>
       </div>
     }>
