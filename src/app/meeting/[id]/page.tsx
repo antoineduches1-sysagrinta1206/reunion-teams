@@ -66,7 +66,6 @@ function MeetingRoomInner() {
   const audioElRef = useRef<HTMLAudioElement>(null)
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
   const idleVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
-  const mobileAudioRefs = useRef<Record<string, HTMLAudioElement>>({})
   const playStartRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -256,46 +255,42 @@ function MeetingRoomInner() {
   }, [joined])
 
   // Timeline ticker — controls which participant's audio is heard
+  // SAME logic for desktop AND mobile — no degraded experience
+  // Performance: only update React state when speaker actually changes, minimize seeks
   useEffect(() => {
     if (!joined || !meetingData) return
 
-    // Detect mobile — only 1 video plays at a time to prevent stuttering
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
-    const TICK_MS = isMobile ? 250 : 100
-    const DRIFT_THRESHOLD = isMobile ? 0.5 : 0.15
-    if (isMobile) console.log('[MOBILE] Single-video mode — only active speaker decodes')
+    let lastSpeakerId: string | null = null
+    let driftCheckCounter = 0
 
-    let lastSpeaker: string | null = null
-    let logCounter = 0
     const tick = () => {
       if (playStartRef.current === 0) return
       const now = (Date.now() - playStartRef.current) / 1000
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
-      setSpeakingId(currentSpeaker)
 
-      // After scenario: enforce silence (including mobile audio objects)
+      // Only update React state when speaker actually changes (avoids re-renders every tick)
+      if (currentSpeaker !== lastSpeakerId) {
+        setSpeakingId(currentSpeaker)
+        lastSpeakerId = currentSpeaker
+      }
+
+      // After scenario: enforce silence
       if (meetingEndedRef.current) {
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
-          if (vid) { vid.volume = 0; vid.muted = true; if (!vid.paused) vid.pause() }
-          const idle = idleVideoRefs.current[p.id]
-          if (idle && !idle.paused) idle.pause()
-          const audio = mobileAudioRefs.current[p.id]
-          if (audio) { audio.volume = 0; audio.pause() }
+          if (vid && vid.volume > 0) vid.volume = 0
         })
         return
       }
 
       meetingData.participants.forEach(p => {
-        // Excluded participants: force silence + no playback
+        // Excluded participants
         if (excludedIds.has(p.id)) {
           const vid = videoRefs.current[p.id]
-          if (vid) { vid.volume = 0; vid.muted = true; if (!vid.paused) vid.pause() }
+          if (vid) { vid.volume = 0; if (!vid.paused) vid.pause() }
           const idle = idleVideoRefs.current[p.id]
           if (idle && !idle.paused) idle.pause()
-          const audio = mobileAudioRefs.current[p.id]
-          if (audio) { audio.volume = 0; audio.pause() }
           return
         }
 
@@ -304,107 +299,49 @@ function MeetingRoomInner() {
           const vid = videoRefs.current[p.id]
           if (!vid) return
           const isSpeaker = (p.id === currentSpeaker)
-
-          if (isMobile) {
-            // === MOBILE: SEPARATED AUDIO/VIDEO STRATEGY ===
-            // Audio plays from lightweight Audio() objects (no video decoding).
-            // Video is muted, only active speaker's video plays (for lip-sync visual).
-            const audio = mobileAudioRefs.current[p.id]
-
-            if (isSpeaker) {
-              // Audio: unmute this speaker
-              if (audio) { audio.volume = 1 }
-              // Video: play muted for visual lip-sync
-              vid.muted = true
-              vid.volume = 0
-              if (vid.paused && vid.readyState >= 2) {
-                const expectedTime = now <= vid.duration ? now : now % vid.duration
-                if (vid.duration > 0) vid.currentTime = expectedTime
-                vid.play().catch(() => {})
-              }
-            } else {
-              // Audio: silence this speaker
-              if (audio) { audio.volume = 0 }
-              // Video: pause to free GPU
-              vid.muted = true
-              vid.volume = 0
-              if (!vid.paused) vid.pause()
-            }
-
-            // Drift correction on audio objects (all of them, they're cheap)
-            if (audio && audio.duration > 0 && !audio.paused) {
-              const expectedTime = now <= audio.duration ? now : now % audio.duration
-              const drift = Math.abs(audio.currentTime - expectedTime)
-              if (drift > DRIFT_THRESHOLD) {
-                audio.currentTime = expectedTime
-              }
-            }
-          } else {
-            // === DESKTOP STRATEGY ===
-            // All videos play simultaneously, volume controls who is heard
-            vid.volume = isSpeaker ? 1 : 0
-            if (vid.paused || vid.readyState < 2) {
-              vid.play().catch(() => {})
-            }
-            // Tight drift correction for perfect lip-sync
-            if (vid.duration > 0 && !vid.paused) {
-              const expectedTime = now <= vid.duration ? now : now % vid.duration
-              const drift = Math.abs(vid.currentTime - expectedTime)
-              if (drift > DRIFT_THRESHOLD) {
-                vid.currentTime = expectedTime
-                if (drift > 0.3) console.log(`[SYNC] ${p.name}: drift=${drift.toFixed(2)}s`)
-              }
-            }
+          // Volume control — the core mechanism (same desktop & mobile)
+          const targetVol = isSpeaker ? 1 : 0
+          if (vid.volume !== targetVol) vid.volume = targetVol
+          // Keep playing — only call play() if actually paused (avoid overhead)
+          if (vid.paused && vid.readyState >= 2) {
+            vid.play().catch(() => {})
           }
         } else {
-          // Listener/observer
-          if (isMobile) {
-            // On mobile: do NOT play idle videos — show initials instead (saves CPU)
-            const idleVid = idleVideoRefs.current[p.id]
-            if (idleVid && !idleVid.paused) idleVid.pause()
-          } else {
-            // Desktop: keep idle video playing (always muted)
-            const idleVid = idleVideoRefs.current[p.id]
-            if (idleVid && (idleVid.paused || idleVid.readyState < 2)) {
-              idleVid.muted = true
-              idleVid.loop = true
-              idleVid.play().catch(() => {})
-            }
+          // Listener: keep idle video looping (muted)
+          const idleVid = idleVideoRefs.current[p.id]
+          if (idleVid && idleVid.paused && idleVid.readyState >= 2) {
+            idleVid.muted = true
+            idleVid.loop = true
+            idleVid.play().catch(() => {})
           }
         }
       })
 
-      // Detailed state log every ~2.5 seconds
-      logCounter++
-      const logEvery = isMobile ? 10 : 20
-      if (logCounter % logEvery === 0) {
-        const playing = meetingData.participants.filter(p => {
-          const v = videoRefs.current[p.id]
-          return v && !v.paused
-        }).length
-        console.log(`[STATE] t=${now.toFixed(1)}s spk=${currentSpeaker || '-'} playing=${playing}/${meetingData.participants.length}`)
+      // Drift correction — only check every 5th tick (~500ms) to reduce seek overhead
+      driftCheckCounter++
+      if (driftCheckCounter % 5 === 0) {
+        meetingData.participants.forEach(p => {
+          if ((p.role || 'speaker') !== 'speaker') return
+          const vid = videoRefs.current[p.id]
+          if (!vid || vid.paused || vid.duration === 0) return
+          const expectedTime = now <= vid.duration ? now : now % vid.duration
+          const drift = Math.abs(vid.currentTime - expectedTime)
+          // Only seek if drift > 300ms — seeking is expensive on mobile
+          if (drift > 0.3) {
+            vid.currentTime = expectedTime
+          }
+        })
       }
 
-      if (currentSpeaker !== lastSpeaker) {
-        const name = currentSpeaker ? meetingData.participants.find(p => p.id === currentSpeaker)?.name : 'nobody'
-        console.log(`[TICKER] t=${now.toFixed(1)}s → ${name}`)
-        lastSpeaker = currentSpeaker
-      }
-
-      if (activeSeg) {
-        setScenarioStatus('')
-      } else if (now > meetingData.totalDuration && !meetingEndedRef.current) {
-        // Meeting scenario ended — EJECT CLIENT immediately
+      // Meeting end detection
+      if (!activeSeg && now > meetingData.totalDuration && !meetingEndedRef.current) {
         meetingEndedRef.current = true
         setMeetingEnded(true)
-        console.log('[MEETING] Scenario ended — ejecting client')
         meetingData.participants.forEach(p => {
           const mainVid = videoRefs.current[p.id]
           const idleVid = idleVideoRefs.current[p.id]
-          if (mainVid) { mainVid.volume = 0; mainVid.muted = true; mainVid.pause() }
+          if (mainVid) { mainVid.volume = 0; mainVid.pause() }
           if (idleVid) { idleVid.pause() }
-          const audio = mobileAudioRefs.current[p.id]
-          if (audio) { audio.volume = 0; audio.pause() }
         })
         if (clientVideoRef.current?.srcObject) {
           const tracks = (clientVideoRef.current.srcObject as MediaStream).getTracks()
@@ -418,20 +355,11 @@ function MeetingRoomInner() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: meetingId, action: 'end' }),
         }).catch(() => {})
-      } else if (meetingEndedRef.current) {
-        setScenarioStatus('')
-      } else {
-        setScenarioStatus('')
       }
     }
 
-    timerRef.current = setInterval(tick, TICK_MS)
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-      // Cleanup mobile audio objects on unmount
-      Object.values(mobileAudioRefs.current).forEach(a => { a.pause(); a.src = '' })
-      mobileAudioRefs.current = {}
-    }
+    timerRef.current = setInterval(tick, 100)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [joined, meetingData])
 
   // Start all videos — videos are pre-loaded as blobs, so playback is instant (no network)
@@ -509,64 +437,8 @@ function MeetingRoomInner() {
     // Set playStartRef BEFORE starting videos so the clock is consistent
     playStartRef.current = Date.now() - (startOffset * 1000)
 
-    const isMobileStart = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
-
-    if (isMobileStart) {
-      // === MOBILE: SEPARATED AUDIO/VIDEO ===
-      // 1. Create Audio() objects for each speaker (lightweight, audio-only decoding)
-      // 2. Start all videos muted from user gesture (unlocks them for later play/pause)
-      // 3. Pause all videos except first speaker (visual only)
-      // Audio objects carry ALL the sound — videos are purely visual on mobile.
-      const firstSeg = meetingData.timeline[0]
-      const firstSpeakerId = firstSeg ? firstSeg.participantId : null
-
-      // Create Audio objects for each speaker participant
-      for (const p of meetingData.participants) {
-        const isSpeakerRole = (p.role || 'speaker') === 'speaker'
-        if (isSpeakerRole) {
-          const blobUrl = videoBlobUrls[p.id] || p.videoUrl
-          const audio = new Audio(blobUrl)
-          audio.preload = 'auto'
-          audio.volume = (p.id === firstSpeakerId) ? 1 : 0
-          mobileAudioRefs.current[p.id] = audio
-        }
-      }
-
-      // Start all videos muted (user gesture = unlocks them for future play/pause)
-      // Pre-mute ALL before starting
-      meetingData.participants.forEach(p => {
-        const vid = videoRefs.current[p.id]
-        if (vid) { vid.muted = true; vid.volume = 0 }
-      })
-      await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
-
-      // Start all Audio objects (user gesture context — MUST be here)
-      const audioStartPromises = Object.values(mobileAudioRefs.current).map(a => a.play().catch(() => {}))
-      await Promise.all(audioStartPromises)
-
-      // Pause all videos except first speaker (they're just visual)
-      meetingData.participants.forEach(p => {
-        const vid = videoRefs.current[p.id]
-        if (vid && p.id !== firstSpeakerId) {
-          vid.pause()
-        }
-        const idle = idleVideoRefs.current[p.id]
-        if (idle && !idle.paused) idle.pause()
-      })
-
-      // Sync all audio objects to the wall clock
-      const audioSync = (Date.now() - playStartRef.current) / 1000
-      Object.entries(mobileAudioRefs.current).forEach(([, audio]) => {
-        if (audio.duration > 0) {
-          audio.currentTime = audioSync <= audio.duration ? audioSync : audioSync % audio.duration
-        }
-      })
-
-      console.log(`[PLAY-M] Mobile: ${Object.keys(mobileAudioRefs.current).length} audio objects + 1 video (${firstSpeakerId})`)
-    } else {
-      // DESKTOP: Start ALL participants in parallel
-      await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
-    }
+    // Start ALL participants in parallel — same for desktop and mobile
+    await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
 
     // After all started: force-sync every playing speaker to the wall clock
     const syncNow = (Date.now() - playStartRef.current) / 1000
@@ -578,7 +450,7 @@ function MeetingRoomInner() {
         }
       }
     })
-    console.log(`[PLAY] Synced at t=${syncNow.toFixed(2)}s (mobile=${isMobileStart})`)
+    console.log(`[PLAY] All started + synced at t=${syncNow.toFixed(2)}s`)
   }, [meetingData])
 
   // Notify server of join
@@ -677,14 +549,8 @@ function MeetingRoomInner() {
   }, [joined, meetingData, startAllVideos])
 
   // Start idle videos immediately after join (for crossfade during scenario)
-  // On MOBILE: skip idle videos entirely to save CPU
   useEffect(() => {
     if (!joined || !meetingData) return
-    const isMobileIdle = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
-    if (isMobileIdle) {
-      console.log('[MOBILE] Skipping idle videos to save CPU')
-      return
-    }
     let cancelled = false
 
     const startIdles = () => {
@@ -707,85 +573,41 @@ function MeetingRoomInner() {
     return () => { cancelled = true; clearTimeout(t); clearTimeout(t2); clearTimeout(t3) }
   }, [joined, meetingData, idleBlobUrls])
 
-  // Watchdog: monitor videos every 3s
-  // On desktop: restart stalled videos. On mobile: only restart stalled ACTIVE speaker.
+  // Watchdog: monitor videos every 5s — restart stalled videos, same for all platforms
   useEffect(() => {
     if (!joined || !meetingData || playStartRef.current === 0) return
-    const isMobileWD = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
     const watchdog = setInterval(() => {
       if (meetingEndedRef.current) {
         meetingData.participants.forEach(p => {
           const mainVid = videoRefs.current[p.id]
-          if (mainVid) { mainVid.volume = 0; mainVid.muted = true; if (!mainVid.paused) mainVid.pause() }
-          const idleVid = idleVideoRefs.current[p.id]
-          if (idleVid && !idleVid.paused) idleVid.pause()
-          const audio = mobileAudioRefs.current[p.id]
-          if (audio) { audio.volume = 0; audio.pause() }
+          if (mainVid && mainVid.volume > 0) mainVid.volume = 0
         })
         return
       }
 
-      const now = (Date.now() - playStartRef.current) / 1000
-      const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
-      const activeSpeakerId = activeSeg ? activeSeg.participantId : null
-
       meetingData.participants.forEach(p => {
+        if (excludedIds.has(p.id)) return
         const isSpeakerRole = (p.role || 'speaker') === 'speaker'
         const vid = isSpeakerRole ? videoRefs.current[p.id] : null
         const idleVid = idleVideoRefs.current[p.id]
 
-        // On mobile: keep audio objects running, only restart active speaker's video
-        if (isMobileWD) {
-          const audio = mobileAudioRefs.current[p.id]
-          if (audio && audio.paused && !meetingEndedRef.current && !excludedIds.has(p.id)) {
-            const wallClock = (Date.now() - playStartRef.current) / 1000
-            if (audio.duration > 0) audio.currentTime = wallClock <= audio.duration ? wallClock : wallClock % audio.duration
-            audio.play().catch(() => {})
-            console.warn(`[WATCHDOG-M] ${p.name}: audio restarted`)
-          }
+        // Restart stalled speaker videos
+        if (vid && vid.paused && vid.readyState >= 2) {
+          const wallClock = (Date.now() - playStartRef.current) / 1000
+          if (vid.duration > 0) vid.currentTime = wallClock <= vid.duration ? wallClock : wallClock % vid.duration
+          vid.play().catch(() => {})
         }
 
-        if (vid) {
-          // On mobile: only restart the ACTIVE speaker video if it stalled
-          if (isMobileWD && p.id !== activeSpeakerId) return
-
-          if (vid.paused && vid.readyState >= 2 && (!isMobileWD || p.id === activeSpeakerId)) {
-            const wallClock = (Date.now() - playStartRef.current) / 1000
-            if (vid.duration > 0) vid.currentTime = wallClock <= vid.duration ? wallClock : wallClock % vid.duration
-            console.warn(`[WATCHDOG] ${p.name}: restarting at t=${vid.currentTime.toFixed(2)}s`)
-            vid.play().catch(() => {})
-          }
-          if (vid.error) {
-            console.warn(`[WATCHDOG] ${p.name}: main error ${vid.error.code}, reloading...`)
-            const savedTime = vid.currentTime
-            const src = vid.src
-            vid.src = ''
-            vid.src = src
-            vid.load()
-            setTimeout(() => {
-              if (savedTime > 0 && vid.duration > 0) vid.currentTime = Math.min(savedTime, vid.duration)
-              vid.play().catch(() => {})
-            }, 2000)
-          }
-          if (vid.readyState < 2 && !vid.paused) {
-            console.warn(`[WATCHDOG] ${p.name}: main buffering (readyState=${vid.readyState})`)
-          }
-        }
-
-        // Keep idle video playing — DESKTOP ONLY (mobile skips idle videos)
-        if (!isMobileWD && idleVid && idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
-          if (!isSpeakerRole) {
-            idleVid.loop = true
-            idleVid.muted = true
-            idleVid.play().catch(() => {})
-          } else if (meetingEndedRef.current) {
+        // Restart stalled idle videos
+        if (idleVid && idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
+          if (!isSpeakerRole || meetingEndedRef.current) {
             idleVid.loop = true
             idleVid.muted = true
             idleVid.play().catch(() => {})
           }
         }
       })
-    }, 3000)
+    }, 5000)
     return () => clearInterval(watchdog)
   }, [joined, meetingData])
 
