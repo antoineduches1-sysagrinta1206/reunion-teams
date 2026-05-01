@@ -277,8 +277,7 @@ function MeetingRoomInner() {
       if (meetingEndedRef.current) {
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
-          if (vid && vid.volume > 0) vid.volume = 0
-          if (isMobile && vid && !vid.paused) vid.pause()
+          if (vid) { vid.volume = 0; vid.muted = true }
         })
         return
       }
@@ -301,14 +300,14 @@ function MeetingRoomInner() {
 
           if (isMobile) {
             // === MOBILE STRATEGY ===
-            // Only the active speaker plays with audio. Others are paused to save CPU.
-            // This prevents audio stuttering from too many simultaneous video decoders.
+            // All videos keep playing, but non-speakers are MUTED (vid.muted = true).
+            // This tells the browser to skip audio decoding entirely → saves CPU.
+            // We do NOT pause/play because mobile browsers fail to resume from timers.
             if (isSpeaker) {
+              vid.muted = false
               vid.volume = 1
-              if (vid.paused) {
-                // Seek to correct time before playing
-                const expectedTime = now <= vid.duration ? now : now % vid.duration
-                if (vid.duration > 0) vid.currentTime = expectedTime
+              // Ensure it's playing
+              if (vid.paused && vid.readyState >= 2) {
                 vid.play().catch(() => {})
               }
               // Drift correction — only for active speaker, looser threshold
@@ -321,9 +320,12 @@ function MeetingRoomInner() {
                 }
               }
             } else {
-              // Non-speaking: pause to free CPU (video still shows last frame = looks natural)
+              // Non-speaking: mute (not pause) to save CPU but keep video playing
+              vid.muted = true
               vid.volume = 0
-              if (!vid.paused) vid.pause()
+              if (vid.paused && vid.readyState >= 2) {
+                vid.play().catch(() => {})
+              }
             }
           } else {
             // === DESKTOP STRATEGY ===
@@ -485,20 +487,20 @@ function MeetingRoomInner() {
     const isMobileStart = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
 
     if (isMobileStart) {
-      // MOBILE: Only start the first speaker + listeners. Other speakers stay paused.
-      // The ticker will start/pause videos as speakers change.
+      // MOBILE: Start all videos but mute non-first-speaker videos
+      // Using muted strategy (not pause) so all videos stay in sync
       const firstSeg = meetingData.timeline[0]
       const firstSpeakerId = firstSeg ? firstSeg.participantId : null
-      const toStart = meetingData.participants.filter(p => {
-        if ((p.role || 'speaker') !== 'speaker') return true // listeners always start
-        return p.id === firstSpeakerId // only first speaker
-      })
-      console.log(`[PLAY-M] Mobile: starting ${toStart.length}/${meetingData.participants.length} videos`)
-      await Promise.all(toStart.map(p => startSingleVideo(p)))
-      // Clear loading for paused speakers
+      // Pre-mute non-active speakers before starting
       meetingData.participants.forEach(p => {
-        setVideoLoading(prev => ({ ...prev, [p.id]: false }))
+        const vid = videoRefs.current[p.id]
+        if (vid && (p.role || 'speaker') === 'speaker' && p.id !== firstSpeakerId) {
+          vid.muted = true
+          vid.volume = 0
+        }
       })
+      console.log(`[PLAY-M] Mobile: starting all ${meetingData.participants.length} videos (muted strategy)`)
+      await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
     } else {
       // DESKTOP: Start ALL participants in parallel
       await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
@@ -640,43 +642,33 @@ function MeetingRoomInner() {
   }, [joined, meetingData, idleBlobUrls])
 
   // Watchdog: monitor videos every 3s
-  // During scenario: restart paused/stalled/errored videos, preserve sync
-  // After scenario: FORCE volume=0 (AI must NEVER speak), keep idle videos playing
-  // On MOBILE: don't restart intentionally paused non-speaking videos
+  // During scenario: restart stalled/errored videos, preserve sync
+  // After scenario: FORCE muted (AI must NEVER speak), keep idle videos playing
   useEffect(() => {
     if (!joined || !meetingData || playStartRef.current === 0) return
-    const isMobileWD = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
     const watchdog = setInterval(() => {
       if (meetingEndedRef.current) {
         meetingData.participants.forEach(p => {
           const mainVid = videoRefs.current[p.id]
           const idleVid = idleVideoRefs.current[p.id]
-          if (mainVid && mainVid.volume > 0) { mainVid.volume = 0 }
-          if (isMobileWD && mainVid && !mainVid.paused) mainVid.pause()
+          if (mainVid) { mainVid.volume = 0; mainVid.muted = true }
           if (idleVid) {
-            if (idleVid.volume > 0) idleVid.volume = 0
-            if (!isMobileWD && idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
+            idleVid.volume = 0
+            if (idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
               idleVid.play().catch(() => {})
             }
           }
         })
         return
       }
-      const now = (Date.now() - playStartRef.current) / 1000
-      const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
-      const currentSpeakerId = activeSeg ? activeSeg.participantId : null
 
       meetingData.participants.forEach(p => {
         const isSpeakerRole = (p.role || 'speaker') === 'speaker'
         const vid = isSpeakerRole ? videoRefs.current[p.id] : null
         const idleVid = idleVideoRefs.current[p.id]
 
-        // Keep main video playing (speakers)
+        // Keep main video playing (speakers) — restart if stalled
         if (vid) {
-          // On mobile, only restart if this participant IS the current speaker
-          // Non-speakers are intentionally paused — don't restart them
-          if (isMobileWD && p.id !== currentSpeakerId) return
-
           if (vid.paused && vid.readyState >= 2) {
             const wallClock = (Date.now() - playStartRef.current) / 1000
             if (vid.duration > 0) vid.currentTime = wallClock <= vid.duration ? wallClock : wallClock % vid.duration
@@ -835,7 +827,6 @@ function MeetingRoomInner() {
     return 4
   }
   const cols = getResponsiveCols()
-  const rows = Math.ceil(totalTiles / cols)
 
   return (
     <div className="h-screen flex flex-col bg-[#201f1f] overflow-hidden">
@@ -914,16 +905,13 @@ function MeetingRoomInner() {
         />
 
         <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1 bg-[#201f1f] overflow-y-auto p-1 sm:p-2 md:p-4">
+          <div className="flex-1 bg-[#201f1f] p-1 sm:p-2 md:p-4 overflow-hidden">
             <div
-              className="grid gap-1 sm:gap-2 w-full mx-auto"
+              className="grid gap-1 sm:gap-2 w-full h-full mx-auto"
               style={{
                 gridTemplateColumns: `repeat(${cols}, 1fr)`,
-                gridAutoRows: `minmax(0, 1fr)`,
+                gridTemplateRows: `repeat(${Math.ceil(totalTiles / cols)}, 1fr)`,
                 maxWidth: totalTiles <= 2 ? '900px' : totalTiles <= 4 ? '1100px' : '100%',
-                // Try to fit all tiles in viewport; if too many rows, allow scroll
-                height: rows <= 3 ? '100%' : 'auto',
-                minHeight: rows > 3 ? `${rows * 120}px` : undefined,
               }}
             >
               {/* AI Participant tiles — ALL cameras always visible like a real meeting */}
@@ -937,7 +925,7 @@ function MeetingRoomInner() {
                     className={`relative rounded-lg overflow-hidden transition-all duration-300 ${
                       isSpeaking ? 'ring-2 ring-green-500 z-10' : 'ring-1 ring-[#3b3b3b]'
                     }`}
-                    style={{ backgroundColor: '#1a1a1a', aspectRatio: rows <= 3 ? '16/9' : undefined, minHeight: '80px' }}
+                    style={{ backgroundColor: '#1a1a1a' }}
                   >
                     {/* EXCLUDED: show initials only — no video, no audio */}
                     {isExcluded ? (
@@ -1019,7 +1007,7 @@ function MeetingRoomInner() {
               {/* Client tile — camera ON, mic always OFF */}
               <div
                 className="relative rounded-lg overflow-hidden ring-1 ring-[#3b3b3b]"
-                style={{ backgroundColor: '#2d2d2d', aspectRatio: rows <= 3 ? '16/9' : undefined, minHeight: '80px' }}
+                style={{ backgroundColor: '#2d2d2d' }}
               >
                 {/* Client webcam feed */}
                 <video
