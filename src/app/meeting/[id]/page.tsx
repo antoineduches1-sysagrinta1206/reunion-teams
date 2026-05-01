@@ -745,20 +745,7 @@ function MeetingRoomInner() {
                 </div>
               </div>
 
-              {/* Preload progress — only for sessions (not templates, since template redirects) */}
-              {!isTemplate && !preloadDone && (
-                <div className="w-full">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[11px] text-gray-400">Setting up meeting...</span>
-                    <span className="text-[11px] text-[#5b5fc7] font-medium">{preloadProgress}%</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-[#1a1a1a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#5b5fc7] rounded-full transition-all duration-300" style={{ width: `${preloadProgress}%` }} />
-                  </div>
-                </div>
-              )}
-
-              {/* Join button */}
+              {/* Join button — hidden until preload done (no progress bar visible) */}
               <button
                 onClick={handleJoin}
                 disabled={!canJoin || !displayName.trim()}
@@ -768,7 +755,7 @@ function MeetingRoomInner() {
                     : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-lg shadow-[#5b5fc7]/20 hover:shadow-[#5b5fc7]/40'
                 }`}
               >
-                {!canJoin ? 'Loading...' : 'Join meeting'}
+                Join meeting
               </button>
             </div>
           </div>
