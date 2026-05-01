@@ -296,12 +296,14 @@ function MeetingRoomInner() {
           if (vid.paused || vid.readyState < 2) {
             vid.play().catch(() => {})
           }
-          // DRIFT CORRECTION: if video drifts >0.5s from expected time, resync it
-          if (vid.duration > 0 && !vid.paused && now <= vid.duration) {
-            const drift = Math.abs(vid.currentTime - now)
-            if (drift > 0.5) {
-              console.log(`[SYNC] ${p.name}: drift=${drift.toFixed(2)}s — resyncing to ${now.toFixed(1)}s`)
-              vid.currentTime = now
+          // DRIFT CORRECTION: if video drifts >150ms from expected time, resync it
+          // This is critical for lip-sync accuracy
+          if (vid.duration > 0 && !vid.paused) {
+            const expectedTime = now <= vid.duration ? now : now % vid.duration
+            const drift = Math.abs(vid.currentTime - expectedTime)
+            if (drift > 0.15) {
+              vid.currentTime = expectedTime
+              if (drift > 0.3) console.log(`[SYNC] ${p.name}: drift=${drift.toFixed(2)}s — resynced to ${expectedTime.toFixed(2)}s`)
             }
           }
         } else {
@@ -449,11 +451,23 @@ function MeetingRoomInner() {
       }
     }
 
+    // Set playStartRef BEFORE starting videos so the clock is consistent
+    playStartRef.current = Date.now() - (startOffset * 1000)
+
     // Start ALL participants (speakers + listeners) in parallel
     await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
 
-    playStartRef.current = Date.now() - (startOffset * 1000)
-    console.log(`[PLAY] All started from memory, playStartRef=${playStartRef.current}`)
+    // After all started: force-sync every speaker to the wall clock
+    const syncNow = (Date.now() - playStartRef.current) / 1000
+    meetingData.participants.forEach(p => {
+      if ((p.role || 'speaker') === 'speaker') {
+        const vid = videoRefs.current[p.id]
+        if (vid && vid.duration > 0 && !vid.paused) {
+          vid.currentTime = syncNow <= vid.duration ? syncNow : syncNow % vid.duration
+        }
+      }
+    })
+    console.log(`[PLAY] All started + synced at t=${syncNow.toFixed(2)}s`)
   }, [meetingData])
 
   // Notify server of join
@@ -609,7 +623,10 @@ function MeetingRoomInner() {
         // Keep main video playing (speakers)
         if (vid) {
           if (vid.paused && vid.readyState >= 2) {
-            console.warn(`[WATCHDOG] ${p.name}: main paused, restarting...`)
+            // Resync to wall clock before restarting
+            const now = (Date.now() - playStartRef.current) / 1000
+            if (vid.duration > 0) vid.currentTime = now <= vid.duration ? now : now % vid.duration
+            console.warn(`[WATCHDOG] ${p.name}: main paused, restarting at t=${vid.currentTime.toFixed(2)}s`)
             vid.play().catch(() => {})
           }
           if (vid.error) {
