@@ -737,73 +737,162 @@ function MeetingRoomInner() {
     )
   }
 
-  // --- JOIN / LOBBY SCREEN ---
+  // --- JOIN / LOBBY SCREEN (Teams-style pre-join) ---
   if (!joined) {
     const canJoin = isTemplate || preloadDone
     return (
-      <div className="h-screen flex items-center justify-center bg-[#1a1a2e]">
+      <div className="h-screen flex flex-col bg-[#f5f5f5] overflow-hidden">
         <audio ref={audioElRef} />
-        <div className="w-full max-w-[440px] mx-4">
-          {/* Teams-style card */}
-          <div className="bg-[#242424] rounded-2xl shadow-2xl overflow-hidden border border-[#333]">
-            {/* Header */}
-            <div className="bg-[#5b5fc7] px-6 py-5 flex items-center gap-3">
-              <svg viewBox="0 0 24 24" className="w-8 h-8 flex-shrink-0" fill="none">
-                <path d="M20.5 6h-3.5V4.5A1.5 1.5 0 0015.5 3h-7A1.5 1.5 0 007 4.5V6H3.5A1.5 1.5 0 002 7.5v9A1.5 1.5 0 003.5 18H7v1.5A1.5 1.5 0 008.5 21h7a1.5 1.5 0 001.5-1.5V18h3.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.5 6z" fill="white"/>
-                <path d="M9.5 8h5v2h-2v5h-1v-5h-2V8z" fill="#5b5fc7"/>
-              </svg>
-              <div>
-                <h1 className="text-white font-bold text-lg leading-tight">{meetingData.title}</h1>
-                <p className="text-white/60 text-xs mt-0.5">{meetingData.participants.length + 1} participants</p>
+
+        {/* Top bar — Teams purple */}
+        <div className="h-12 bg-[#5b5fc7] flex items-center justify-between px-4 flex-shrink-0">
+          <span className="text-white text-[13px] font-semibold">Microsoft Teams Meeting</span>
+          <div className="flex items-center gap-3">
+            <span className="text-white/60 text-[13px]">•••</span>
+          </div>
+        </div>
+
+        {/* Main content */}
+        <div className="flex-1 flex flex-col items-center justify-center px-4 overflow-y-auto">
+          {/* Teams icon */}
+          <div className="mb-4">
+            <svg viewBox="0 0 32 32" className="w-12 h-12" fill="none">
+              <rect width="32" height="32" rx="4" fill="#5b5fc7"/>
+              <path d="M10.5 10h11v3h-4.5v9h-2v-9h-4.5V10z" fill="white"/>
+            </svg>
+          </div>
+
+          {/* Meeting title */}
+          <h1 className="text-[#242424] text-xl font-semibold mb-3">{meetingData.title}</h1>
+
+          {/* Name input */}
+          <input
+            type="text"
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
+            placeholder={meetingData.title}
+            className="w-full max-w-[360px] text-center text-[#242424] text-[15px] bg-white border border-[#d1d1d1] rounded px-4 py-2.5 outline-none focus:border-[#5b5fc7] placeholder-[#616161] mb-8"
+          />
+
+          {/* Two-column layout: Camera preview + Audio settings */}
+          <div className="w-full max-w-[860px] flex flex-col md:flex-row gap-6 md:gap-8">
+
+            {/* LEFT — Camera preview */}
+            <div className="flex-1 max-w-[420px] mx-auto md:mx-0">
+              <div className="bg-[#242424] rounded-lg aspect-video flex flex-col items-center justify-center relative">
+                {/* Client webcam preview */}
+                <video
+                  ref={clientVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="absolute inset-0 w-full h-full object-cover rounded-lg"
+                  style={{ transform: 'scaleX(-1)', display: clientCameraOn ? 'block' : 'none' }}
+                />
+                {!clientCameraOn && (
+                  <>
+                    <svg viewBox="0 0 24 24" className="w-8 h-8 text-white/40 mb-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9.75a2.25 2.25 0 002.25-2.25V7.5a2.25 2.25 0 00-2.25-2.25H4.5A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" strokeLinecap="round" strokeLinejoin="round"/>
+                      <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                    <p className="text-white/50 text-[13px]">Your camera is turned off</p>
+                  </>
+                )}
+              </div>
+              {/* Camera controls bar */}
+              <div className="flex items-center gap-3 mt-3 px-1">
+                <button
+                  onClick={() => {
+                    if (clientCameraOn) {
+                      if (clientVideoRef.current?.srcObject) {
+                        (clientVideoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop())
+                        clientVideoRef.current.srcObject = null
+                      }
+                      setClientCameraOn(false)
+                    } else {
+                      navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(stream => {
+                        if (clientVideoRef.current) clientVideoRef.current.srcObject = stream
+                        setClientCameraOn(true)
+                      }).catch(() => {})
+                    }
+                  }}
+                  className="flex items-center gap-2 text-[13px] text-[#616161] hover:text-[#242424] transition-colors"
+                >
+                  <div className={`w-9 h-5 rounded-full flex items-center transition-colors ${clientCameraOn ? 'bg-[#5b5fc7] justify-end' : 'bg-[#c4c4c4] justify-start'}`}>
+                    <div className="w-4 h-4 bg-white rounded-full shadow mx-0.5" />
+                  </div>
+                </button>
+                <span className="text-[12px] text-[#616161]">Background filters</span>
               </div>
             </div>
 
-            <div className="p-6 space-y-5">
-              {/* Participants list */}
-              <div>
-                <p className="text-[11px] text-gray-500 uppercase tracking-wider font-semibold mb-3">People in this meeting</p>
-                <div className="space-y-2">
-                  {meetingData.participants.map(p => (
-                    <div key={p.id} className="flex items-center gap-3 bg-[#1a1a1a] rounded-lg px-3 py-2.5">
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0" style={{ background: p.color }}>
-                        {p.name.charAt(0)}
-                      </div>
-                      <span className="text-sm text-white font-medium">{p.name}</span>
-                    </div>
-                  ))}
+            {/* RIGHT — Audio settings */}
+            <div className="flex-1 max-w-[400px] mx-auto md:mx-0">
+              {/* Computer audio — selected */}
+              <div className="bg-white rounded-lg border border-[#d1d1d1] p-4 mb-3">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-5 h-5 rounded-full border-2 border-[#5b5fc7] flex items-center justify-center">
+                    <div className="w-2.5 h-2.5 rounded-full bg-[#5b5fc7]" />
+                  </div>
+                  <span className="text-[14px] text-[#242424] font-medium">Computer audio</span>
+                </div>
+
+                {/* Microphone row */}
+                <div className="flex items-center justify-between py-2.5 border-t border-[#ededed]">
+                  <div className="flex items-center gap-3">
+                    <svg viewBox="0 0 20 20" className="w-4 h-4 text-[#424242]" fill="currentColor">
+                      <path d="M10 12a3 3 0 003-3V5a3 3 0 00-6 0v4a3 3 0 003 3zm5-3a5 5 0 01-10 0H3a7 7 0 0013.5 3.5l.5-.5V9h-2zm-5 8a1 1 0 01-1-1h2a1 1 0 01-1 1z"/>
+                    </svg>
+                    <span className="text-[13px] text-[#424242]">Microphone</span>
+                  </div>
+                  <div className="w-9 h-5 rounded-full bg-[#5b5fc7] flex items-center justify-end">
+                    <div className="w-4 h-4 bg-white rounded-full shadow mx-0.5" />
+                  </div>
+                </div>
+
+                {/* Speaker row */}
+                <div className="flex items-center gap-3 py-2.5 border-t border-[#ededed]">
+                  <svg viewBox="0 0 20 20" className="w-4 h-4 text-[#424242]" fill="currentColor">
+                    <path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217z"/>
+                    <path d="M14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z"/>
+                  </svg>
+                  <span className="text-[13px] text-[#424242]">Speakers</span>
                 </div>
               </div>
 
-              {/* Divider */}
-              <div className="border-t border-[#333]" />
-
-              {/* Name input */}
-              <div>
-                <p className="text-[11px] text-gray-500 uppercase tracking-wider font-semibold mb-2">Enter your name to join</p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={displayName}
-                    onChange={e => setDisplayName(e.target.value)}
-                    placeholder="First and last name"
-                    className="flex-1 bg-[#1a1a1a] text-white text-sm rounded-lg px-4 py-3 outline-none border border-[#383838] focus:border-[#5b5fc7] placeholder-gray-600 transition-colors"
-                  />
-                </div>
+              {/* Phone audio */}
+              <div className="bg-white rounded-lg border border-[#d1d1d1] px-4 py-3 mb-3 flex items-center gap-3">
+                <div className="w-5 h-5 rounded-full border-2 border-[#c4c4c4]" />
+                <span className="text-[14px] text-[#616161]">Phone audio</span>
               </div>
 
-              {/* Join button — hidden until preload done (no progress bar visible) */}
-              <button
-                onClick={handleJoin}
-                disabled={!canJoin || !displayName.trim()}
-                className={`w-full font-semibold py-3.5 rounded-lg text-[15px] transition-all ${
-                  (!canJoin || !displayName.trim())
-                    ? 'bg-[#333] text-gray-500 cursor-not-allowed'
-                    : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white shadow-lg shadow-[#5b5fc7]/20 hover:shadow-[#5b5fc7]/40'
-                }`}
-              >
-                Join meeting
-              </button>
+              {/* No audio */}
+              <div className="bg-white rounded-lg border border-[#d1d1d1] px-4 py-3 flex items-center gap-3">
+                <div className="w-5 h-5 rounded-full border-2 border-[#c4c4c4]" />
+                <span className="text-[14px] text-[#616161]">Don&apos;t use audio</span>
+              </div>
             </div>
+          </div>
+
+          {/* Bottom buttons */}
+          <div className="flex items-center gap-3 mt-8 mb-6">
+            <button
+              onClick={() => window.history.back()}
+              className="px-6 py-2.5 rounded border border-[#d1d1d1] bg-white text-[14px] text-[#242424] font-medium hover:bg-[#f0f0f0] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleJoin}
+              disabled={!canJoin || !displayName.trim()}
+              className={`px-6 py-2.5 rounded text-[14px] font-medium transition-colors ${
+                (!canJoin || !displayName.trim())
+                  ? 'bg-[#bdbdbd] text-white cursor-not-allowed'
+                  : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white'
+              }`}
+            >
+              Join now
+            </button>
           </div>
         </div>
       </div>
