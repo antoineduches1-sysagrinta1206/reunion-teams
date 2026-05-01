@@ -767,13 +767,21 @@ function MeetingRoomInner() {
   // --- MEETING VIEW ---
   const totalTiles = meetingData.participants.length + 1 // AI tiles + client tile
   const getResponsiveCols = () => {
-    if (typeof window === 'undefined') return 3
+    if (typeof window === 'undefined') return 2
     const w = window.innerWidth
+    // Mobile: max 2 cols, always
     if (w < 640) return totalTiles <= 2 ? 1 : 2
-    if (w < 1024) return totalTiles <= 2 ? 2 : 2
-    return totalTiles <= 2 ? 2 : totalTiles <= 4 ? 2 : totalTiles <= 6 ? 3 : 4
+    // Tablet
+    if (w < 1024) return totalTiles <= 2 ? 2 : totalTiles <= 4 ? 2 : 3
+    // Desktop: scale with participant count
+    if (totalTiles <= 2) return 2
+    if (totalTiles <= 4) return 2
+    if (totalTiles <= 6) return 3
+    if (totalTiles <= 9) return 3
+    return 4
   }
   const cols = getResponsiveCols()
+  const rows = Math.ceil(totalTiles / cols)
 
   return (
     <div className="h-screen flex flex-col bg-[#201f1f] overflow-hidden">
@@ -852,13 +860,16 @@ function MeetingRoomInner() {
         />
 
         <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1 bg-[#201f1f] flex items-center justify-center p-1 sm:p-2 md:p-4">
+          <div className="flex-1 bg-[#201f1f] overflow-y-auto p-1 sm:p-2 md:p-4">
             <div
-              className="grid gap-1 sm:gap-2 w-full h-full auto-rows-fr"
+              className="grid gap-1 sm:gap-2 w-full mx-auto"
               style={{
                 gridTemplateColumns: `repeat(${cols}, 1fr)`,
+                gridAutoRows: `minmax(0, 1fr)`,
                 maxWidth: totalTiles <= 2 ? '900px' : totalTiles <= 4 ? '1100px' : '100%',
-                alignContent: 'center',
+                // Try to fit all tiles in viewport; if too many rows, allow scroll
+                height: rows <= 3 ? '100%' : 'auto',
+                minHeight: rows > 3 ? `${rows * 120}px` : undefined,
               }}
             >
               {/* AI Participant tiles — ALL cameras always visible like a real meeting */}
@@ -872,7 +883,7 @@ function MeetingRoomInner() {
                     className={`relative rounded-lg overflow-hidden transition-all duration-300 ${
                       isSpeaking ? 'ring-2 ring-green-500 z-10' : 'ring-1 ring-[#3b3b3b]'
                     }`}
-                    style={{ backgroundColor: '#1a1a1a', aspectRatio: '16/9' }}
+                    style={{ backgroundColor: '#1a1a1a', aspectRatio: rows <= 3 ? '16/9' : undefined, minHeight: '80px' }}
                   >
                     {/* EXCLUDED: show initials only — no video, no audio */}
                     {isExcluded ? (
@@ -931,7 +942,7 @@ function MeetingRoomInner() {
                     {videoLoading[p.id] && !isExcluded && (
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#1a1a1a]/80">
                         <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                        <span className="text-[11px] text-gray-400 mt-2">Chargement...</span>
+                        <span className="text-[11px] text-gray-400 mt-2">Loading...</span>
                       </div>
                     )}
 
@@ -954,7 +965,7 @@ function MeetingRoomInner() {
               {/* Client tile — camera ON, mic always OFF */}
               <div
                 className="relative rounded-lg overflow-hidden ring-1 ring-[#3b3b3b]"
-                style={{ backgroundColor: '#2d2d2d', aspectRatio: '16/9' }}
+                style={{ backgroundColor: '#2d2d2d', aspectRatio: rows <= 3 ? '16/9' : undefined, minHeight: '80px' }}
               >
                 {/* Client webcam feed */}
                 <video

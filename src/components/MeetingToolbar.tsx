@@ -86,7 +86,7 @@ export default function MeetingToolbar({
       <div className="flex items-center gap-0.5">
         <ToolbarButton
           icon={<MessageSquare className="w-4 h-4 sm:w-[18px] sm:h-[18px] text-teams-icon" />}
-          label="Conversation"
+          label="Chat"
           onClick={onToggleChat}
         />
         <ToolbarButton
@@ -97,20 +97,20 @@ export default function MeetingToolbar({
         <span className="hidden sm:contents">
           <ToolbarButton
             icon={<Hand className="w-[18px] h-[18px] text-teams-icon" />}
-            label="Lever la main"
+            label="Raise hand"
           />
           <ToolbarButton
             icon={<Smile className="w-[18px] h-[18px] text-teams-icon" />}
-            label="Réagir"
+            label="React"
           />
           <ToolbarButton
             icon={<LayoutGrid className="w-[18px] h-[18px] text-teams-icon" />}
-            label="Affichage"
+            label="View"
           />
         </span>
         <ToolbarButton
           icon={<MoreHorizontal className="w-4 h-4 sm:w-[18px] sm:h-[18px] text-teams-icon" />}
-          label="Autres"
+          label="More"
         />
 
         {/* Separator */}
@@ -129,7 +129,7 @@ export default function MeetingToolbar({
             )}
             <ChevronDown className="w-3 h-3 text-teams-icon hidden sm:block" />
           </div>
-          <span className="text-[10px] text-teams-text-secondary hidden sm:block">Caméra</span>
+          <span className="text-[10px] text-teams-text-secondary hidden sm:block">Camera</span>
         </button>
 
         {/* Microphone */}
@@ -145,7 +145,7 @@ export default function MeetingToolbar({
             )}
             <ChevronDown className="w-3 h-3 text-teams-icon hidden sm:block" />
           </div>
-          <span className="text-[10px] text-teams-text-secondary hidden sm:block">Microphone</span>
+          <span className="text-[10px] text-teams-text-secondary hidden sm:block">Mic</span>
         </button>
 
         {/* Share — hidden on mobile */}
@@ -154,7 +154,7 @@ export default function MeetingToolbar({
             <MonitorUp className="w-[18px] h-[18px] text-teams-icon" />
             <ChevronDown className="w-3 h-3 text-teams-icon" />
           </div>
-          <span className="text-[10px] text-teams-text-secondary">Partager</span>
+          <span className="text-[10px] text-teams-text-secondary">Share</span>
         </button>
 
         {/* Leave button */}
@@ -163,7 +163,7 @@ export default function MeetingToolbar({
             <PhoneOff className="w-4 h-4 sm:w-[18px] sm:h-[18px] text-teams-red" />
             <ChevronDown className="w-3 h-3 text-teams-red hidden sm:block" />
           </div>
-          <span className="text-[10px] text-teams-red hidden sm:block">Quitter</span>
+          <span className="text-[10px] text-teams-red hidden sm:block">Leave</span>
         </button>
       </div>
 
