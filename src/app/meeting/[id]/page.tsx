@@ -936,13 +936,14 @@ function MeetingRoomInner() {
         />
 
         <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1 bg-[#201f1f] p-1 sm:p-2 md:p-4 overflow-hidden">
+          <div className="flex-1 bg-[#201f1f] p-1 sm:p-2 md:p-4 overflow-hidden flex items-center justify-center">
             <div
-              className="grid gap-1 sm:gap-2 w-full h-full mx-auto"
+              className="grid gap-1 sm:gap-2 w-full mx-auto"
               style={{
                 gridTemplateColumns: `repeat(${cols}, 1fr)`,
-                gridTemplateRows: `repeat(${Math.ceil(totalTiles / cols)}, 1fr)`,
+                gridAutoRows: '1fr',
                 maxWidth: totalTiles <= 2 ? '900px' : totalTiles <= 4 ? '1100px' : '100%',
+                maxHeight: '100%',
               }}
             >
               {/* AI Participant tiles — ALL cameras always visible like a real meeting */}
@@ -956,7 +957,7 @@ function MeetingRoomInner() {
                     className={`relative rounded-lg overflow-hidden transition-all duration-300 ${
                       isSpeaking ? 'ring-2 ring-green-500 z-10' : 'ring-1 ring-[#3b3b3b]'
                     }`}
-                    style={{ backgroundColor: '#1a1a1a' }}
+                    style={{ backgroundColor: '#1a1a1a', aspectRatio: '4/3' }}
                   >
                     {/* EXCLUDED: show initials only — no video, no audio */}
                     {isExcluded ? (
@@ -1038,7 +1039,7 @@ function MeetingRoomInner() {
               {/* Client tile — camera ON, mic always OFF */}
               <div
                 className="relative rounded-lg overflow-hidden ring-1 ring-[#3b3b3b]"
-                style={{ backgroundColor: '#2d2d2d' }}
+                style={{ backgroundColor: '#2d2d2d', aspectRatio: '4/3' }}
               >
                 {/* Client webcam feed */}
                 <video
