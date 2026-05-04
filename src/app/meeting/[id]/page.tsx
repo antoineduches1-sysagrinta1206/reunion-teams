@@ -254,24 +254,16 @@ function MeetingRoomInner() {
     return () => clearInterval(t)
   }, [joined])
 
-  // Timeline ticker — MINIMAL INTERFERENCE approach
-  // - ALL non-speaker videos stay muted=true (browser skips audio decode entirely)
-  // - Only active speaker has muted=false + volume=1
-  // - NO drift correction during playback (causes audio artifacts)
-  // - Sync ONLY at speaker transitions
+  // Timeline ticker — SIMPLE volume switching, ZERO interference
+  // - All videos play with muted=false, volume=0 (NOT muted=true — browsers block muted toggling)
+  // - Active speaker gets volume=1
+  // - NO drift correction, NO seeks, NO playbackRate changes during playback
+  // - Sync ONLY at speaker transitions (one-time seek while still at volume=0)
   useEffect(() => {
     if (!joined || !meetingData) return
 
     let lastSpeaker: string | null = null
     let logCounter = 0
-
-    // Ensure all speaker videos are muted initially
-    meetingData.participants.forEach(p => {
-      if ((p.role || 'speaker') === 'speaker') {
-        const vid = videoRefs.current[p.id]
-        if (vid) { vid.muted = true; vid.volume = 0 }
-      }
-    })
 
     const tick = () => {
       if (playStartRef.current === 0) return
@@ -279,32 +271,26 @@ function MeetingRoomInner() {
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
 
-      // ===== SPEAKER TRANSITION — the ONLY moment we touch audio =====
+      // ===== SPEAKER TRANSITION =====
       if (currentSpeaker !== lastSpeaker) {
-        // 1. Silence the OLD speaker completely
+        // 1. Volume off on old speaker
         if (lastSpeaker) {
           const oldVid = videoRefs.current[lastSpeaker]
-          if (oldVid) {
-            oldVid.volume = 0
-            oldVid.muted = true // Browser stops audio decode
-          }
+          if (oldVid) oldVid.volume = 0
         }
 
-        // 2. Activate the NEW speaker
+        // 2. Sync + volume on for new speaker
         if (currentSpeaker) {
           const vid = videoRefs.current[currentSpeaker]
           if (vid) {
-            // Sync position while still muted
+            // One-time position sync (video is still at volume=0)
             if (vid.duration > 0) {
               const expected = now <= vid.duration ? now : now % vid.duration
-              if (Math.abs(vid.currentTime - expected) > 0.1) {
+              if (Math.abs(vid.currentTime - expected) > 0.15) {
                 vid.currentTime = expected
               }
             }
-            // Ensure playing
             if (vid.paused && vid.readyState >= 2) vid.play().catch(() => {})
-            // Unmute + set volume (audio decoder starts)
-            vid.muted = false
             vid.volume = 1
           }
         }
@@ -315,38 +301,22 @@ function MeetingRoomInner() {
         lastSpeaker = currentSpeaker
       }
 
-      // ===== AFTER SCENARIO: enforce total silence =====
+      // ===== AFTER SCENARIO =====
       if (meetingEndedRef.current) {
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
-          if (vid && !vid.muted) { vid.muted = true; vid.volume = 0 }
+          if (vid && vid.volume > 0) vid.volume = 0
         })
         return
       }
 
-      // ===== KEEP VIDEOS ALIVE (no audio changes, just ensure playback) =====
+      // ===== EXCLUDED =====
       meetingData.participants.forEach(p => {
         if (excludedIds.has(p.id)) {
           const vid = videoRefs.current[p.id]
-          if (vid) { vid.muted = true; vid.volume = 0; if (!vid.paused) vid.pause() }
+          if (vid) { vid.volume = 0; if (!vid.paused) vid.pause() }
           const idle = idleVideoRefs.current[p.id]
           if (idle && !idle.paused) idle.pause()
-          return
-        }
-
-        const isSpeakerRole = (p.role || 'speaker') === 'speaker'
-        if (isSpeakerRole) {
-          const vid = videoRefs.current[p.id]
-          if (vid && vid.paused && vid.readyState >= 2) {
-            vid.play().catch(() => {})
-          }
-        } else {
-          const idleVid = idleVideoRefs.current[p.id]
-          if (idleVid && idleVid.paused && idleVid.readyState >= 2) {
-            idleVid.muted = true
-            idleVid.loop = true
-            idleVid.play().catch(() => {})
-          }
         }
       })
 
@@ -356,7 +326,7 @@ function MeetingRoomInner() {
         const states = meetingData.participants.map(p => {
           const v = videoRefs.current[p.id]
           if (!v) return `${p.name}:NO_REF`
-          return `${p.name}:${v.paused ? 'P' : 'OK'} t=${v.currentTime.toFixed(1)} m=${v.muted}`
+          return `${p.name}:${v.paused ? 'P' : 'OK'} t=${v.currentTime.toFixed(1)} vol=${v.volume}`
         }).join(' | ')
         console.log(`[STATE] t=${now.toFixed(1)}s spk=${currentSpeaker || '-'} | ${states}`)
       }
@@ -369,7 +339,7 @@ function MeetingRoomInner() {
         meetingData.participants.forEach(p => {
           const mainVid = videoRefs.current[p.id]
           const idleVid = idleVideoRefs.current[p.id]
-          if (mainVid) { mainVid.muted = true; mainVid.volume = 0; mainVid.pause() }
+          if (mainVid) { mainVid.volume = 0; mainVid.pause() }
           if (idleVid) { idleVid.pause() }
         })
         if (clientVideoRef.current?.srcObject) {
@@ -427,9 +397,8 @@ function MeetingRoomInner() {
         vid.currentTime = startOffset > vid.duration ? startOffset % vid.duration : startOffset
       }
 
-      // ALL videos start muted — browser skips audio decode, saves CPU
-      // Only the active speaker gets unmuted by the ticker
-      vid.muted = true
+      // Use volume=0 (NOT muted) — muted toggling blocked by browsers without gesture
+      vid.muted = false
       vid.volume = 0
       if (!isSpeakerRole) {
         vid.loop = true
@@ -599,16 +568,15 @@ function MeetingRoomInner() {
     return () => { cancelled = true; clearTimeout(t); clearTimeout(t2); clearTimeout(t3) }
   }, [joined, meetingData, idleBlobUrls])
 
-  // Watchdog: minimal — only restart genuinely paused/errored videos
-  // NEVER seeks or touches audio properties (that's the ticker's job)
+  // Watchdog: ONLY restart paused videos — no seeks, no audio changes
   useEffect(() => {
     if (!joined || !meetingData || playStartRef.current === 0) return
     const watchdog = setInterval(() => {
       if (meetingEndedRef.current) {
         meetingData.participants.forEach(p => {
-          const mainVid = videoRefs.current[p.id]
+          const vid = videoRefs.current[p.id]
+          if (vid && vid.volume > 0) vid.volume = 0
           const idleVid = idleVideoRefs.current[p.id]
-          if (mainVid && !mainVid.muted) { mainVid.muted = true; mainVid.volume = 0 }
           if (idleVid && idleVid.paused && idleVid.readyState >= 2) {
             idleVid.muted = true
             idleVid.loop = true
@@ -621,16 +589,17 @@ function MeetingRoomInner() {
       meetingData.participants.forEach(p => {
         if (excludedIds.has(p.id)) return
         const isSpeakerRole = (p.role || 'speaker') === 'speaker'
-        const vid = isSpeakerRole ? videoRefs.current[p.id] : null
-        const idleVid = idleVideoRefs.current[p.id]
 
-        // Restart paused speaker videos (no seek, no audio changes)
-        if (vid && vid.paused && vid.readyState >= 2) {
-          console.warn(`[WATCHDOG] ${p.name}: restarting paused video`)
-          vid.play().catch(() => {})
+        // Restart paused speaker videos (NO seek, NO volume changes)
+        if (isSpeakerRole) {
+          const vid = videoRefs.current[p.id]
+          if (vid && vid.paused && vid.readyState >= 2) {
+            vid.play().catch(() => {})
+          }
         }
 
-        // Restart paused idle videos
+        // Restart paused idle videos (listeners)
+        const idleVid = idleVideoRefs.current[p.id]
         if (idleVid && idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
           if (!isSpeakerRole || meetingEndedRef.current) {
             idleVid.muted = true
