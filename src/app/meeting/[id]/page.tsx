@@ -936,14 +936,13 @@ function MeetingRoomInner() {
         />
 
         <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1 bg-[#201f1f] p-1 sm:p-2 md:p-4 overflow-hidden flex items-center justify-center">
+          <div className="flex-1 bg-[#201f1f] p-1 sm:p-2 md:p-4 overflow-hidden">
             <div
-              className="grid gap-1 sm:gap-2 w-full mx-auto"
+              className="grid gap-1 sm:gap-2 w-full h-full mx-auto"
               style={{
                 gridTemplateColumns: `repeat(${cols}, 1fr)`,
-                gridAutoRows: '1fr',
+                gridTemplateRows: `repeat(${Math.ceil(totalTiles / cols)}, 1fr)`,
                 maxWidth: totalTiles <= 2 ? '900px' : totalTiles <= 4 ? '1100px' : '100%',
-                maxHeight: '100%',
               }}
             >
               {/* AI Participant tiles — ALL cameras always visible like a real meeting */}
@@ -957,7 +956,7 @@ function MeetingRoomInner() {
                     className={`relative rounded-lg overflow-hidden transition-all duration-300 ${
                       isSpeaking ? 'ring-2 ring-green-500 z-10' : 'ring-1 ring-[#3b3b3b]'
                     }`}
-                    style={{ backgroundColor: '#1a1a1a', aspectRatio: '4/3' }}
+                    style={{ backgroundColor: '#1a1a1a' }}
                   >
                     {/* EXCLUDED: show initials only — no video, no audio */}
                     {isExcluded ? (
@@ -1036,27 +1035,37 @@ function MeetingRoomInner() {
                 )
               })}
 
-              {/* Client tile — camera ON, mic always OFF */}
+              {/* Client tile — camera ON, mic always OFF. Can be excluded by admin */}
               <div
-                className="relative rounded-lg overflow-hidden ring-1 ring-[#3b3b3b]"
-                style={{ backgroundColor: '#2d2d2d', aspectRatio: '4/3' }}
+                className={`relative rounded-lg overflow-hidden ring-1 ring-[#3b3b3b]`}
+                style={{ backgroundColor: '#2d2d2d' }}
               >
-                {/* Client webcam feed */}
-                <video
-                  ref={clientVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="absolute inset-0 w-full h-full object-cover"
-                  style={{ transform: 'scaleX(-1)' }}
-                />
-                {/* Fallback initials if no webcam */}
-                {!clientCameraOn && (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
+                {excludedIds.has('__client__') ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a1a]">
+                    <div className="w-16 h-16 rounded-full bg-[#5b5fc7]/40 flex items-center justify-center text-white text-xl font-bold">
                       {displayName.charAt(0).toUpperCase()}
                     </div>
                   </div>
+                ) : (
+                  <>
+                    {/* Client webcam feed */}
+                    <video
+                      ref={clientVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="absolute inset-0 w-full h-full object-cover"
+                      style={{ transform: 'scaleX(-1)' }}
+                    />
+                    {/* Fallback initials if no webcam */}
+                    {!clientCameraOn && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
+                          {displayName.charAt(0).toUpperCase()}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 z-20">
                   <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">

@@ -407,6 +407,7 @@ export default function AdminMeetings() {
                   Participants ({selected.participants.length})
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* AI participants */}
                   {selected.participants.map(p => {
                     const isExcluded = selected.excludedParticipants?.includes(p.id)
                     const pSegments = (selected.timeline || []).filter(s => s.participantId === p.id)
@@ -493,6 +494,68 @@ export default function AdminMeetings() {
                       </div>
                     )
                   })}
+
+                  {/* Client tile — visible when client has joined */}
+                  {selected.state?.clientJoined && (() => {
+                    const clientExcluded = selected.excludedParticipants?.includes('__client__')
+                    const clientDisplayName = selected.clientName || 'Client'
+                    return (
+                      <div
+                        className={`rounded-xl p-4 border transition-all ${
+                          clientExcluded
+                            ? 'bg-red-500/5 border-red-500/20'
+                            : 'bg-[#1a1a2e] border-[#5b5fc7]/30'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="relative flex-shrink-0">
+                            <div
+                              className={`w-12 h-12 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white font-bold text-lg ${clientExcluded ? 'opacity-40 grayscale' : ''}`}
+                            >
+                              {clientDisplayName.charAt(0).toUpperCase()}
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm font-semibold ${clientExcluded ? 'line-through text-gray-500' : ''}`}>
+                                {clientDisplayName}
+                              </span>
+                              <span className="text-[10px] bg-[#5b5fc7]/20 text-[#a5b4fc] px-1.5 py-0.5 rounded-full font-medium">CLIENT</span>
+                              {clientExcluded && (
+                                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded-full font-medium">EXCLU</span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-gray-500">Participant reel (webcam)</span>
+                          </div>
+                          <div>
+                            {clientExcluded ? (
+                              <button
+                                onClick={() => handleRestore(selected.id, '__client__', clientDisplayName)}
+                                className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors"
+                              >
+                                <UserCheck className="w-3.5 h-3.5" />
+                                Restaurer
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleKick(selected.id, '__client__', clientDisplayName)}
+                                disabled={selected.ended}
+                                className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors"
+                              >
+                                <UserX className="w-3.5 h-3.5" />
+                                Exclure
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {clientExcluded && (
+                          <p className="text-[11px] text-red-400/70 mt-2 pl-[60px]">
+                            Camera du client coupee. Seules les initiales sont affichees.
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
               </div>
 
