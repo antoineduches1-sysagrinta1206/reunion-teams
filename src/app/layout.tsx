@@ -2,8 +2,13 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Zoom Meeting',
+  title: 'Microsoft Teams Meeting',
   description: 'Meeting in progress',
+  openGraph: {
+    title: 'Microsoft Teams Meeting',
+    description: 'Meeting in progress',
+    siteName: 'Microsoft Teams',
+  },
 }
 
 export default function RootLayout({

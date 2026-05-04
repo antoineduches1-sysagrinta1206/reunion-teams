@@ -16,6 +16,8 @@ export interface MeetingData {
   isTemplate?: boolean // true = original generated meeting (link to share)
   templateId?: string // if this is a session, points to the original template
   clientName?: string // name the client entered when joining
+  singleUse?: boolean // true = link can only be used once
+  consumed?: boolean // true = someone already joined this single-use link
   state: {
     started: boolean
     startedAt: number | null
@@ -135,12 +137,22 @@ export async function PATCH(request: NextRequest) {
 
   switch (action) {
     case 'clientJoin':
+      // Enforce single-use: if already consumed, reject
+      if (meeting.singleUse && meeting.consumed) {
+        return NextResponse.json({ error: 'This meeting link has already been used.', expired: true }, { status: 403 })
+      }
       meeting.state.clientJoined = true
       if (!meeting.state.started) {
         meeting.state.started = true
         meeting.state.startedAt = Date.now()
       }
-      console.log(`[MEETING] ${id}: Client joined`)
+      // Save client name if provided
+      if (body.clientName) meeting.clientName = body.clientName
+      // Mark single-use session as consumed
+      if (meeting.singleUse) {
+        meeting.consumed = true
+      }
+      console.log(`[MEETING] ${id}: Client joined${meeting.singleUse ? ' (single-use consumed)' : ''}`)
       break
     case 'clientLeave':
       meeting.state.clientJoined = false
@@ -170,7 +182,8 @@ export async function PATCH(request: NextRequest) {
       break
     case 'clone': {
       // Create a new session from a template meeting
-      const clientName = body.clientName || 'Client'
+      const clientName = body.clientName || ''
+      const singleUse = body.singleUse || false
       const sessionId = crypto.randomBytes(4).toString('hex')
       const session: MeetingData = {
         ...JSON.parse(JSON.stringify(meeting)),
@@ -179,14 +192,42 @@ export async function PATCH(request: NextRequest) {
         adminKey: meeting.adminKey,
         isTemplate: false,
         templateId: meeting.id,
-        clientName,
+        clientName: clientName || undefined,
+        singleUse,
+        consumed: false,
         excludedParticipants: [],
         ended: false,
         state: { started: false, startedAt: null, clientJoined: false },
       }
       saveMeeting(session)
-      console.log(`[MEETING] Cloned ${id} -> session ${sessionId} for ${clientName}`)
+      console.log(`[MEETING] Cloned ${id} -> session ${sessionId}${singleUse ? ' (single-use)' : ''} for ${clientName || 'TBD'}`)
       return NextResponse.json({ success: true, sessionId })
+    }
+    case 'bulkClone': {
+      // Create N single-use sessions from a template
+      const count = body.count || 5
+      const sessionIds: string[] = []
+      for (let i = 0; i < count; i++) {
+        const sid = crypto.randomBytes(4).toString('hex')
+        const session: MeetingData = {
+          ...JSON.parse(JSON.stringify(meeting)),
+          id: sid,
+          createdAt: Date.now(),
+          adminKey: meeting.adminKey,
+          isTemplate: false,
+          templateId: meeting.id,
+          clientName: undefined,
+          singleUse: true,
+          consumed: false,
+          excludedParticipants: [],
+          ended: false,
+          state: { started: false, startedAt: null, clientJoined: false },
+        }
+        saveMeeting(session)
+        sessionIds.push(sid)
+      }
+      console.log(`[MEETING] Bulk cloned ${id} -> ${count} single-use sessions: ${sessionIds.join(', ')}`)
+      return NextResponse.json({ success: true, sessionIds })
     }
     case 'setClientName':
       meeting.clientName = body.clientName || 'Client'

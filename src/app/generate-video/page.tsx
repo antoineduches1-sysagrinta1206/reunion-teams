@@ -78,7 +78,7 @@ export default function ScenarioBuilder() {
   const [meetingTimeline, setMeetingTimeline] = useState<{ participantId: string; startTime: number; endTime: number }[]>([])
   const [meetingDuration, setMeetingDuration] = useState(0)
   const [launched, setLaunched] = useState(false)
-  const [meetingLink, setMeetingLink] = useState<string | null>(null)
+  const [meetingLinks, setMeetingLinks] = useState<string[]>([])
   const [adminLink, setAdminLink] = useState<string | null>(null)
   const [listeners, setListeners] = useState<ListenerConfig[]>([])
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
@@ -342,7 +342,7 @@ export default function ScenarioBuilder() {
 
     setIsGenerating(true)
     setScenarioReady(false)
-    setMeetingLink(null)
+    setMeetingLinks([])
     const log: string[] = []
     // Total steps: TTS per line + 1 combine + 1 video per participant
     const totalSteps = validLines.length + 1 + usedCases.length
@@ -790,9 +790,21 @@ export default function ScenarioBuilder() {
       })
       const data = await res.json()
       if (data.success && data.meetingId) {
-        const clientLink = `${window.location.origin}/meeting/${data.meetingId}`
-        setMeetingLink(clientLink)
-        setGenStatus(prev => prev ? { ...prev, detail: 'Liens de reunion generes !' } : null)
+        // Generate 5 single-use session links from the template
+        const bulkRes = await fetch('/api/meeting', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: data.meetingId, action: 'bulkClone', count: 5 }),
+        })
+        const bulkData = await bulkRes.json()
+        if (bulkData.success && bulkData.sessionIds) {
+          const links = bulkData.sessionIds.map((sid: string) => `${window.location.origin}/meeting/${sid}`)
+          setMeetingLinks(links)
+          setGenStatus(prev => prev ? { ...prev, detail: `${links.length} liens single-use generes !` } : null)
+        } else {
+          // Fallback: use template link directly
+          setMeetingLinks([`${window.location.origin}/meeting/${data.meetingId}`])
+        }
       } else {
         console.error('Failed to create meeting:', data.error)
       }
@@ -1093,49 +1105,57 @@ export default function ScenarioBuilder() {
             {scenarioReady && !isGenerating && (
               <div style={{
                 marginTop: 20, padding: 24, borderRadius: 12,
-                background: meetingLink ? 'linear-gradient(135deg, #064e3b, #065f46)' : 'linear-gradient(135deg, #1a1a2e, #16213e)',
-                border: meetingLink ? '2px solid #10b981' : '2px solid #6366f1',
+                background: meetingLinks.length > 0 ? 'linear-gradient(135deg, #064e3b, #065f46)' : 'linear-gradient(135deg, #1a1a2e, #16213e)',
+                border: meetingLinks.length > 0 ? '2px solid #10b981' : '2px solid #6366f1',
                 textAlign: 'center',
               }}>
-                {meetingLink ? (
+                {meetingLinks.length > 0 ? (
                   <>
                     <div style={{ fontSize: 24, marginBottom: 8 }}>✅</div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: '#4ade80', marginBottom: 6 }}>Reunion prete !</div>
-
-                    {/* Meeting link */}
-                    <div style={{ fontSize: 12, color: '#86efac', marginBottom: 8, fontWeight: 600 }}>🔗 Lien de la reunion :</div>
-                    <div style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      background: '#0a0a0a', borderRadius: 8, padding: '10px 14px', marginBottom: 16,
-                    }}>
-                      <input
-                        readOnly
-                        value={meetingLink}
-                        onClick={e => (e.target as HTMLInputElement).select()}
-                        style={{
-                          flex: 1, background: 'none', border: 'none', color: '#5eead4', fontSize: 13,
-                          fontFamily: 'monospace', outline: 'none', cursor: 'text',
-                        }}
-                      />
-                      <button
-                        onClick={() => { navigator.clipboard.writeText(meetingLink); }}
-                        style={{
-                          padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 11, fontWeight: 700,
-                          background: '#10b981', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
-                        }}
-                      >
-                        Copier
-                      </button>
+                    <div style={{ fontSize: 12, color: '#86efac', marginBottom: 12, fontWeight: 600 }}>
+                      🔗 {meetingLinks.length} liens single-use (1 ouverture par lien) :
                     </div>
 
-                    <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                      <a href={meetingLink} target="_blank" rel="noopener noreferrer" style={{
-                        display: 'inline-block', padding: '12px 28px', borderRadius: 10, fontSize: 14, fontWeight: 800,
-                        background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', textDecoration: 'none',
-                        boxShadow: '0 4px 20px rgba(16,185,129,0.4)',
+                    {/* All meeting links */}
+                    {meetingLinks.map((link, idx) => (
+                      <div key={idx} style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        background: '#0a0a0a', borderRadius: 8, padding: '8px 14px', marginBottom: 8,
                       }}>
-                        Ouvrir la reunion
-                      </a>
+                        <span style={{ color: '#6ee7b7', fontSize: 11, fontWeight: 700, minWidth: 60 }}>Lien {idx + 1}</span>
+                        <input
+                          readOnly
+                          value={link}
+                          onClick={e => (e.target as HTMLInputElement).select()}
+                          style={{
+                            flex: 1, background: 'none', border: 'none', color: '#5eead4', fontSize: 11,
+                            fontFamily: 'monospace', outline: 'none', cursor: 'text',
+                          }}
+                        />
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(link); }}
+                          style={{
+                            padding: '4px 10px', borderRadius: 6, border: 'none', fontSize: 10, fontWeight: 700,
+                            background: '#10b981', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Copier
+                        </button>
+                      </div>
+                    ))}
+
+                    <div style={{ marginTop: 12, display: 'flex', gap: 12, justifyContent: 'center' }}>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(meetingLinks.join('\n')); }}
+                        style={{
+                          padding: '10px 24px', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 800,
+                          background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', cursor: 'pointer',
+                          boxShadow: '0 4px 20px rgba(16,185,129,0.4)',
+                        }}
+                      >
+                        Copier tous les liens
+                      </button>
                     </div>
                   </>
                 ) : (

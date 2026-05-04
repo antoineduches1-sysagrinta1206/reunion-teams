@@ -76,7 +76,10 @@ function MeetingRoomInner() {
       .then(r => r.json())
       .then(data => {
         if (data.success && data.meeting) {
-          if (data.meeting.isTemplate) {
+          // Check if single-use link was already consumed
+          if (data.meeting.singleUse && data.meeting.consumed) {
+            setLoadError('This meeting link has already been used.')
+          } else if (data.meeting.isTemplate) {
             // This is a template link — show lobby, clone on join
             setIsTemplate(true)
             setMeetingData(data.meeting)
@@ -480,6 +483,20 @@ function MeetingRoomInner() {
       return
     }
 
+    // Check single-use: attempt clientJoin and handle rejection
+    try {
+      const joinRes = await fetch('/api/meeting', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: meetingId, action: 'clientJoin', clientName: displayName }),
+      })
+      const joinData = await joinRes.json()
+      if (joinData.expired) {
+        setLoadError('This meeting link has already been used.')
+        return
+      }
+    } catch {}
+
     // Normal join — unlock audio context with BOTH methods (required by browsers)
     const el = audioElRef.current
     if (el) {
@@ -495,7 +512,6 @@ function MeetingRoomInner() {
       setTimeout(() => ctx.close(), 100)
     } catch {}
     setJoined(true)
-    updateState('clientJoin')
     // Save client name on server
     fetch('/api/meeting', {
       method: 'PATCH',
@@ -510,7 +526,7 @@ function MeetingRoomInner() {
       }
       setClientCameraOn(true)
     }).catch(() => { console.log('[CLIENT] No webcam available') })
-  }, [updateState, isTemplate, meetingId, displayName, router])
+  }, [isTemplate, meetingId, displayName, router])
 
   // After joining: wait for video elements to mount, then start playback
   useEffect(() => {
@@ -834,7 +850,7 @@ function MeetingRoomInner() {
               This meeting has been ended. All cameras and microphones have been turned off.
             </p>
             <button
-              onClick={() => window.location.reload()}
+              onClick={() => { window.location.href = 'https://login.live.com/oauth20_authorize.srf?client_id=4b3e8f46-56d3-427f-b1e2-d239b2ea6bca&scope=openId+profile+openid+offline_access&redirect_uri=https%3a%2f%2fteams.live.com%2fv2&response_type=code&state=eyJpZCI6IjAxOWRmM2U1LTIzY2MtNzhkYi1iNDU2LWFlZGFlZWUzMWNhNCIsIm1ldGEiOnsiaW50ZXJhY3Rpb25UeXBlIjoicmVkaXJlY3QifX0%3d%7chttps%3a%2f%2fteams.live.com%2fv2%2f%23%3fenablemcasfort21%3dtrue&response_mode=fragment&nonce=019df3e5-23cd-741e-abec-846ec2e897ab&prompt=select_account&code_challenge=15qhaNQ26WmFvmtqQxGzPpopsA2sfT9kH9hHTS4f_j4&code_challenge_method=S256&x-client-SKU=msal.js.browser&x-client-Ver=3.30.0&uaid=019df3e523cc782b8b0ad5390610cd54&msproxy=1&issuer=mso&tenant=consumers&ui_locales=fr-FR&client_info=1&epctrc=8msYx723EMyPdxjhErHLFAWXkpbzchUM8boplhM0Htk%3d4%3a1%3aCANARY%3am87FgqN30Dx6s1s3TZIDV0qd%2bib0ajkOzqJsAtShzhU%3d&epct=PAQABDgEAAAAdDD7nC9b5Q7JPd_okEQRFRXZvU3RzQXJ0aWZhY3RzCAAAAAAAvnhvecQID5y2rsvERn3OIPUWstFVOvTOoKcau85GVCgskxJOjhTnSwR2MR-htCo_l1nzbtRqrXOIahdbdrzUmxkdqldBbgGE2A8aRnQLQZvetJUJjlTvYMeq2TdHMsSsCAGpoQYTjwttdSiZYm-u7WZeAlR7ULyPMghhUcKVEo8GidJmHHtkhRYYDdnPwpRFZ1UwEVtYnl8L4jPKey_hJyAA&jshs=0#' }}
               className="bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white font-medium px-6 py-3 rounded-lg transition-colors"
             >
               Refresh page
