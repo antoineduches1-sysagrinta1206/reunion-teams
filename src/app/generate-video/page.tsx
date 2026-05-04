@@ -471,7 +471,7 @@ export default function ScenarioBuilder() {
       // PHASE 3+4: Generate speaking videos + idle videos IN PARALLEL
       // Idle videos don't depend on speaking results — start them immediately
       // ================================================
-      const MAX_CHUNK_SEC = 25
+      const MAX_CHUNK_SEC = 20
       const BASE_VIDEO_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. When audio plays, the person speaks with natural lip sync. When audio is silent, the person is actively listening: mouth fully closed, natural eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. The person never stops moving naturally — continuous realistic human micro-movements throughout. Photorealistic quality, soft office lighting.'
 
       // Build per-participant prompt enriched with their [expressions]
