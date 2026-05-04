@@ -671,7 +671,7 @@ function MeetingRoomInner() {
             type="text"
             value={displayName}
             onChange={e => setDisplayName(e.target.value)}
-            placeholder={meetingData.title}
+            placeholder="Enter your Name and Surname"
             className="w-full max-w-[360px] text-center text-[#242424] text-[15px] bg-white border border-[#d1d1d1] rounded px-4 py-2.5 outline-none focus:border-[#5b5fc7] placeholder-[#616161] mb-8"
           />
 
