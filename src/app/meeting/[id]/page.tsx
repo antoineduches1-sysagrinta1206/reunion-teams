@@ -255,19 +255,45 @@ function MeetingRoomInner() {
   }, [joined])
 
   // Timeline ticker — controls which participant's audio is heard
-  // All videos play simultaneously, volume controls who is heard, tight drift correction
+  // All videos play simultaneously, volume controls who is heard
+  // Drift correction strategy:
+  //   - Active speaker (volume=1): NEVER hard-seek (causes audio glitch "chchch")
+  //     Instead, nudge playbackRate to gently catch up/slow down
+  //   - Muted participants (volume=0): free to hard-seek (no audio = no glitch)
+  //   - Check drift every ~1s, not every tick
   useEffect(() => {
     if (!joined || !meetingData) return
 
     let lastSpeaker: string | null = null
     let logCounter = 0
+    let driftCounter = 0
 
     const tick = () => {
       if (playStartRef.current === 0) return
       const now = (Date.now() - playStartRef.current) / 1000
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
-      setSpeakingId(currentSpeaker)
+
+      if (currentSpeaker !== lastSpeaker) {
+        setSpeakingId(currentSpeaker)
+        const name = currentSpeaker ? meetingData.participants.find(p => p.id === currentSpeaker)?.name : 'nobody'
+        console.log(`[TICKER] t=${now.toFixed(1)}s → ${name}`)
+
+        // When speaker changes, sync the NEW speaker immediately while still muted
+        // (the volume switch happens below, so the seek lands before audio starts)
+        if (currentSpeaker) {
+          const vid = videoRefs.current[currentSpeaker]
+          if (vid && vid.duration > 0) {
+            const expected = now <= vid.duration ? now : now % vid.duration
+            const drift = Math.abs(vid.currentTime - expected)
+            if (drift > 0.08) {
+              vid.currentTime = expected
+              vid.playbackRate = 1.0
+            }
+          }
+        }
+        lastSpeaker = currentSpeaker
+      }
 
       // After scenario: enforce silence on EVERY tick
       if (meetingEndedRef.current) {
@@ -294,19 +320,13 @@ function MeetingRoomInner() {
           if (!vid) return
           const isSpeaker = (p.id === currentSpeaker)
 
-          // All videos play simultaneously, volume controls who is heard
-          vid.volume = isSpeaker ? 1 : 0
-          if (vid.paused || vid.readyState < 2) {
+          // Volume controls who is heard — instant switch
+          const targetVol = isSpeaker ? 1 : 0
+          if (vid.volume !== targetVol) vid.volume = targetVol
+
+          // Keep videos playing
+          if (vid.paused && vid.readyState >= 2) {
             vid.play().catch(() => {})
-          }
-          // Tight drift correction for perfect lip-sync
-          if (vid.duration > 0 && !vid.paused) {
-            const expectedTime = now <= vid.duration ? now : now % vid.duration
-            const drift = Math.abs(vid.currentTime - expectedTime)
-            if (drift > 0.15) {
-              vid.currentTime = expectedTime
-              if (drift > 0.3) console.log(`[SYNC] ${p.name}: drift=${drift.toFixed(2)}s`)
-            }
           }
         } else {
           // Listener: keep idle video playing (always muted)
@@ -319,21 +339,54 @@ function MeetingRoomInner() {
         }
       })
 
-      // Detailed state log every ~2 seconds
+      // Drift correction — every ~1s (every 10 ticks at 100ms)
+      driftCounter++
+      if (driftCounter % 10 === 0) {
+        meetingData.participants.forEach(p => {
+          if ((p.role || 'speaker') !== 'speaker') return
+          if (excludedIds.has(p.id)) return
+          const vid = videoRefs.current[p.id]
+          if (!vid || vid.paused || vid.duration === 0) return
+
+          const expected = now <= vid.duration ? now : now % vid.duration
+          const drift = vid.currentTime - expected // positive = ahead, negative = behind
+
+          if (p.id === currentSpeaker) {
+            // ACTIVE SPEAKER: never hard-seek — use playbackRate to gently correct
+            const absDrift = Math.abs(drift)
+            if (absDrift > 1.0) {
+              // Extreme drift (>1s) — must hard-seek, brief audio blip is acceptable
+              vid.currentTime = expected
+              vid.playbackRate = 1.0
+              console.log(`[SYNC] ${p.name}: HARD seek (drift=${drift.toFixed(2)}s)`)
+            } else if (absDrift > 0.1) {
+              // Moderate drift — nudge playbackRate to catch up/slow down smoothly
+              vid.playbackRate = drift > 0 ? 0.97 : 1.03
+            } else {
+              // Good sync — normal speed
+              if (vid.playbackRate !== 1.0) vid.playbackRate = 1.0
+            }
+          } else {
+            // MUTED participant: hard-seek freely (no audio = no glitch)
+            if (Math.abs(drift) > 0.25) {
+              vid.currentTime = expected
+              vid.playbackRate = 1.0
+            } else if (vid.playbackRate !== 1.0) {
+              vid.playbackRate = 1.0
+            }
+          }
+        })
+      }
+
+      // State log every ~3s
       logCounter++
-      if (logCounter % 20 === 0) {
+      if (logCounter % 30 === 0) {
         const states = meetingData.participants.map(p => {
           const v = videoRefs.current[p.id]
           if (!v) return `${p.name}:NO_REF`
-          return `${p.name}:${v.paused ? 'P' : 'OK'} t=${v.currentTime.toFixed(1)} vol=${v.volume}`
+          return `${p.name}:${v.paused ? 'P' : 'OK'} t=${v.currentTime.toFixed(1)} r=${v.playbackRate} vol=${v.volume}`
         }).join(' | ')
         console.log(`[STATE] t=${now.toFixed(1)}s spk=${currentSpeaker || '-'} | ${states}`)
-      }
-
-      if (currentSpeaker !== lastSpeaker) {
-        const name = currentSpeaker ? meetingData.participants.find(p => p.id === currentSpeaker)?.name : 'nobody'
-        console.log(`[TICKER] t=${now.toFixed(1)}s → ${name}`)
-        lastSpeaker = currentSpeaker
       }
 
       if (activeSeg) {
@@ -361,10 +414,6 @@ function MeetingRoomInner() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: meetingId, action: 'end' }),
         }).catch(() => {})
-      } else if (meetingEndedRef.current) {
-        setScenarioStatus('')
-      } else {
-        setScenarioStatus('')
       }
     }
 
