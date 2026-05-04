@@ -5,47 +5,6 @@ import path from 'path'
 export const runtime = 'nodejs'
 
 const PCM_RATE = 16000 // 16kHz mono 16-bit
-const FADE_IN_SAMPLES = 320 // ~20ms gentle fade-in at 16kHz
-const FADE_OUT_SAMPLES = 800 // ~50ms gentle fade-out
-
-// Gentle fade-in/fade-out on PCM speech segment
-// NO noise gate — it was cutting quiet consonants (t, s, f, p) causing "chchch" artifacts
-function cleanPcmSegment(pcm: Buffer): Buffer {
-  const cleaned = Buffer.from(pcm)
-  const numSamples = cleaned.length / 2
-  if (numSamples < 2) return cleaned
-
-  // Find actual speech boundaries (first/last sample with significant energy)
-  let speechStart = 0
-  let speechEnd = numSamples - 1
-  const DETECT_THRESHOLD = 100 // very low — just to find where speech begins/ends
-  for (let i = 0; i < numSamples; i++) {
-    if (Math.abs(cleaned.readInt16LE(i * 2)) > DETECT_THRESHOLD) { speechStart = i; break }
-  }
-  for (let i = numSamples - 1; i >= 0; i--) {
-    if (Math.abs(cleaned.readInt16LE(i * 2)) > DETECT_THRESHOLD) { speechEnd = i; break }
-  }
-
-  // Gentle fade-in
-  const fadeIn = Math.min(FADE_IN_SAMPLES, Math.max(0, speechEnd - speechStart))
-  for (let i = 0; i < fadeIn; i++) {
-    const idx = speechStart + i
-    if (idx >= numSamples) break
-    const sample = cleaned.readInt16LE(idx * 2)
-    cleaned.writeInt16LE(Math.round(sample * (i / fadeIn)), idx * 2)
-  }
-
-  // Gentle fade-out
-  const fadeOut = Math.min(FADE_OUT_SAMPLES, Math.max(0, speechEnd - speechStart))
-  for (let i = 0; i < fadeOut; i++) {
-    const idx = speechEnd - i
-    if (idx < 0) break
-    const sample = cleaned.readInt16LE(idx * 2)
-    cleaned.writeInt16LE(Math.round(sample * (i / fadeOut)), idx * 2)
-  }
-
-  return cleaned
-}
 
 // Build a WAV file from raw PCM data and save to disk
 function saveWav(pcmData: Buffer, outPath: string) {
@@ -109,9 +68,8 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        const rawPcm = fs.readFileSync(pcmFilePath)
-        // Gentle fade-in/fade-out only — NO noise gate (was causing "chchch")
-        const pcmData = cleanPcmSegment(rawPcm)
+        // Use raw PCM directly — NO processing (noise gate/fades were causing "chchch")
+        const pcmData = fs.readFileSync(pcmFilePath)
         const startByte = Math.floor(seg.startTime * PCM_RATE * 2)
         const maxCopy = Math.min(pcmData.length, totalBytes - startByte)
 
