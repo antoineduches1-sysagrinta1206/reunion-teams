@@ -110,25 +110,28 @@ export async function POST(request: NextRequest) {
     const fname = outputFilename || `concat-${Date.now()}.mp4`
     const outputPath = path.join(outDir, fname)
 
-    // Step 3: Run ffmpeg — try stream copy first, re-encode as fallback
+    // Step 3: Run ffmpeg — always re-encode audio to prevent glitches at chunk boundaries
+    // Stream copy can cause "chchch" artifacts when audio codec params differ between Replicate chunks
     let ffmpegOk = false
-    // Method 1: fast stream copy
+
+    // Method 1: video copy + audio re-encode (fast + safe audio)
     try {
       const { stderr } = await execFileAsync(ffmpegPath, [
         '-f', 'concat', '-safe', '0', '-i', listFilePath,
-        '-c', 'copy', '-movflags', '+faststart', '-y', outputPath,
-      ], { timeout: 180000 })
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart', '-y', outputPath,
+      ], { timeout: 300000 })
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
         ffmpegOk = true
-        console.log('[CONCAT] Stream copy succeeded')
+        console.log('[CONCAT] Video copy + audio re-encode succeeded')
       } else {
-        console.warn('[CONCAT] Stream copy produced empty file, trying re-encode...')
+        console.warn('[CONCAT] Video copy + audio re-encode produced empty file, trying full re-encode...')
       }
     } catch (copyErr: any) {
-      console.warn(`[CONCAT] Stream copy failed: ${copyErr.message?.slice(0, 150)}`)
+      console.warn(`[CONCAT] Video copy + audio re-encode failed: ${copyErr.message?.slice(0, 150)}`)
     }
 
-    // Method 2: re-encode (handles codec mismatches between chunks)
+    // Method 2: full re-encode (handles codec mismatches between chunks)
     if (!ffmpegOk) {
       try {
         // Use individual -i inputs instead of concat demuxer for better compatibility

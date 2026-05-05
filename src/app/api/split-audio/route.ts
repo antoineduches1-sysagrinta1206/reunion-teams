@@ -29,10 +29,10 @@ function buildWavBuffer(pcmData: Buffer): Buffer {
 // Find the best split point near targetSample by looking for a silence gap.
 // Searches ±searchRadius samples around targetSample for the longest silent run.
 // Returns the sample index to cut at (in the middle of the silence gap).
-function findSilenceSplitPoint(pcmData: Buffer, targetSample: number, searchRadiusSamples: number): number {
+function findSilenceSplitPoint(pcmData: Buffer, targetSample: number, searchRadiusSamples: number): { pos: number; foundSilence: boolean } {
   const numSamples = pcmData.length / 2
-  const SILENCE_THRESHOLD = 80 // very low — just detect true silence vs any speech
-  const MIN_SILENCE_SAMPLES = Math.floor(PCM_RATE * 0.15) // at least 150ms of silence to be a valid gap
+  const SILENCE_THRESHOLD = 800 // ElevenLabs audio has low-level noise ~100-400 even in pauses
+  const MIN_SILENCE_SAMPLES = Math.floor(PCM_RATE * 0.05) // 50ms — even brief pauses between words are OK
 
   const searchStart = Math.max(0, targetSample - searchRadiusSamples)
   const searchEnd = Math.min(numSamples, targetSample + searchRadiusSamples)
@@ -40,6 +40,7 @@ function findSilenceSplitPoint(pcmData: Buffer, targetSample: number, searchRadi
   let bestPos = targetSample // fallback: cut at exact target
   let bestScore = -1 // higher = better (longer silence, closer to target)
   let silenceRunStart = -1
+  let foundSilence = false
 
   for (let i = searchStart; i < searchEnd; i++) {
     const sample = Math.abs(pcmData.readInt16LE(i * 2))
@@ -56,6 +57,7 @@ function findSilenceSplitPoint(pcmData: Buffer, targetSample: number, searchRadi
           if (score > bestScore) {
             bestScore = score
             bestPos = midpoint
+            foundSilence = true
           }
         }
       }
@@ -71,11 +73,12 @@ function findSilenceSplitPoint(pcmData: Buffer, targetSample: number, searchRadi
       const score = runLen - (distPenalty * MIN_SILENCE_SAMPLES)
       if (score > bestScore) {
         bestPos = midpoint
+        foundSilence = true
       }
     }
   }
 
-  return bestPos
+  return { pos: bestPos, foundSilence }
 }
 
 // Apply a short fade-out at the end of a chunk to prevent audio pops
@@ -135,8 +138,9 @@ export async function POST(request: NextRequest) {
     }
 
     const targetChunkSamples = Math.floor(maxSec * PCM_RATE)
-    const searchRadiusSamples = Math.floor(5 * PCM_RATE) // search ±5s around each target split point
+    const searchRadiusSamples = Math.floor(8 * PCM_RATE) // search ±8s around each target split point
     const MICRO_FADE_SAMPLES = Math.floor(PCM_RATE * 0.02) // 20ms micro-fade for safety
+    const HARD_CUT_FADE_SAMPLES = Math.floor(PCM_RATE * 0.1) // 100ms fade when no silence found (hard cut fallback)
 
     const outDir = path.join(process.cwd(), 'public', 'audio-temp')
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
@@ -154,21 +158,29 @@ export async function POST(request: NextRequest) {
       } else {
         // Find best silence gap near the target split point
         const targetEnd = offsetSample + targetChunkSamples
-        endSample = findSilenceSplitPoint(pcmData, targetEnd, searchRadiusSamples)
+        const result = findSilenceSplitPoint(pcmData, targetEnd, searchRadiusSamples)
+        endSample = result.pos
 
-        // Safety: ensure chunk is at least 5s and at most maxSec + 5s
+        // Safety: ensure chunk is at least 5s and at most maxSec + 8s
         const minEnd = offsetSample + Math.floor(5 * PCM_RATE)
-        const maxEnd = offsetSample + Math.floor((maxSec + 5) * PCM_RATE)
+        const maxEnd = offsetSample + Math.floor((maxSec + 8) * PCM_RATE)
         endSample = Math.max(minEnd, Math.min(maxEnd, endSample))
         endSample = Math.min(endSample, numSamples)
+
+        if (!result.foundSilence) {
+          console.warn(`[SPLIT] Chunk ${chunkIndex}: NO silence gap found near ${(targetEnd / PCM_RATE).toFixed(1)}s — using hard cut with extended fade`)
+        } else {
+          console.log(`[SPLIT] Chunk ${chunkIndex}: silence gap found at ${(endSample / PCM_RATE).toFixed(1)}s (target was ${(targetEnd / PCM_RATE).toFixed(1)}s)`)
+        }
       }
 
       const chunkPcm = Buffer.from(pcmData.subarray(offsetSample * 2, endSample * 2))
       const chunkDuration = chunkPcm.length / (PCM_RATE * 2)
 
-      // Apply micro-fades at boundaries to prevent any audio pops
-      fadeInStart(chunkPcm, MICRO_FADE_SAMPLES)
-      fadeOutEnd(chunkPcm, MICRO_FADE_SAMPLES)
+      // Apply fades at boundaries — longer fade if we had to hard-cut through speech
+      const fadeSamples = MICRO_FADE_SAMPLES
+      fadeInStart(chunkPcm, fadeSamples)
+      fadeOutEnd(chunkPcm, fadeSamples)
 
       const baseName = wavPath ? path.basename(wavPath, '.wav') : 'inline'
       const fname = `chunk-${baseName}-${chunkIndex}-${Date.now()}.wav`
