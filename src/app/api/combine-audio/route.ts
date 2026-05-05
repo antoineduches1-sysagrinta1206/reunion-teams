@@ -43,7 +43,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing participantIds, segments, or totalDuration' }, { status: 400 })
     }
 
-    const totalSamples = Math.ceil(totalDuration * PCM_RATE)
+    const paddedDuration = totalDuration + 1 // +1s safety buffer to prevent last-word truncation
+    const totalSamples = Math.ceil(paddedDuration * PCM_RATE)
     const totalBytes = totalSamples * 2
 
     console.log(`[COMBINE] Building ${participantIds.length} audio tracks, total ${totalDuration.toFixed(1)}s (${(totalBytes / 1024).toFixed(0)} KB PCM each)`)

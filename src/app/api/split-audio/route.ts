@@ -152,8 +152,8 @@ export async function POST(request: NextRequest) {
     while (offsetSample < numSamples) {
       let endSample: number
 
-      if (offsetSample + targetChunkSamples >= numSamples) {
-        // Last chunk — take everything remaining
+      if (numSamples - offsetSample <= (maxSec + 3) * PCM_RATE) {
+        // Remaining audio fits comfortably in one chunk — take it all
         endSample = numSamples
       } else {
         // Find best silence gap near the target split point
