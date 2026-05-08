@@ -641,14 +641,16 @@ function MeetingRoomInner() {
     )
   }
 
-  // --- ERROR ---
+  // --- ERROR: redirect to real Microsoft Teams ---
   if (loadError || !meetingData) {
+    if (typeof window !== 'undefined') {
+      window.location.href = 'https://teams.microsoft.com'
+    }
     return (
       <div className="h-screen flex items-center justify-center bg-[#1a1a2e]">
         <div className="flex flex-col items-center gap-4">
-          <div className="text-4xl">❌</div>
-          <h1 className="text-xl font-semibold text-white">Meeting not found</h1>
-          <p className="text-gray-400 text-sm">{loadError || 'This meeting link is invalid or has expired.'}</p>
+          <div className="animate-spin w-8 h-8 border-2 border-white border-t-transparent rounded-full" />
+          <p className="text-gray-400 text-sm">Redirection...</p>
         </div>
       </div>
     )
