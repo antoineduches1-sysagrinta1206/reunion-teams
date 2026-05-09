@@ -86,6 +86,84 @@ export default function ScenarioBuilder() {
   const listenerFileRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const [activePredictions, setActivePredictions] = useState<string[]>([])
   const cancelledRef = useRef(false)
+  const [historyList, setHistoryList] = useState<{ id: string; name: string; createdAt: number; casesCount: number; linesCount: number }[]>([])
+  const [showHistory, setShowHistory] = useState(false)
+
+  // Load history from localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('scenario-history')
+      if (raw) {
+        const list = JSON.parse(raw) as any[]
+        setHistoryList(list.map(m => ({ id: m.id, name: m.name, createdAt: m.createdAt, casesCount: m.cases?.length || 0, linesCount: m.script?.length || 0 })))
+      }
+    } catch {}
+  }, [])
+
+  const saveScenarioToHistory = useCallback((customName?: string) => {
+    try {
+      const entry = {
+        id: `scenario-${Date.now()}`,
+        name: customName || `Réunion ${new Date().toLocaleDateString('fr-FR')} ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`,
+        createdAt: Date.now(),
+        cases: cases.map(c => ({ id: c.id, label: c.label, color: c.color, photoBase64: c.photoBase64, voiceId: c.voiceId, clonedVoiceId: c.clonedVoiceId })),
+        listeners: listeners.map(l => ({ id: l.id, label: l.label, color: l.color, photoBase64: l.photoBase64 })),
+        script: lines.map(l => ({ id: l.id, caseId: l.caseId, text: l.text, mode: l.mode })),
+      }
+      const existing = JSON.parse(localStorage.getItem('scenario-history') || '[]')
+      existing.unshift(entry)
+      const trimmed = existing.slice(0, 30)
+      localStorage.setItem('scenario-history', JSON.stringify(trimmed))
+      setHistoryList(trimmed.map((m: any) => ({ id: m.id, name: m.name, createdAt: m.createdAt, casesCount: m.cases?.length || 0, linesCount: m.script?.length || 0 })))
+      return entry.id
+    } catch { return null }
+  }, [cases, listeners, lines])
+
+  const loadScenarioFromHistory = useCallback((historyId: string) => {
+    try {
+      const all = JSON.parse(localStorage.getItem('scenario-history') || '[]')
+      const entry = all.find((m: any) => m.id === historyId)
+      if (!entry) return
+      // Restore cases
+      if (entry.cases?.length > 0) {
+        setCases(entry.cases.map((c: any) => ({
+          id: c.id, label: c.label, color: c.color, photo: c.photoBase64 ? 'loaded' : null,
+          photoPath: null, photoBase64: c.photoBase64, voiceId: c.voiceId || '',
+          clonedVoiceId: c.clonedVoiceId || null, voiceCloneStatus: c.clonedVoiceId ? 'cloned' as const : 'none' as const, voiceCloneFileName: null,
+        })))
+      }
+      // Restore listeners
+      if (entry.listeners?.length > 0) {
+        setListeners(entry.listeners.map((l: any) => ({
+          id: l.id, label: l.label, color: l.color, photo: l.photoBase64 ? 'loaded' : null,
+          photoPath: null, photoBase64: l.photoBase64, idleVideoUrl: '',
+        })))
+      }
+      // Restore script
+      if (entry.script?.length > 0) {
+        setLines(entry.script.map((s: any) => ({
+          id: s.id || `l${Date.now()}-${Math.random()}`, caseId: s.caseId, text: s.text, mode: s.mode || 'text',
+          audioFileName: null, audioPcmPath: null, audioDuration: null, audioUploading: false,
+        })))
+      }
+      // Reset generation state
+      setScenarioReady(false)
+      setParticipantVideos({})
+      setParticipantIdleVideos({})
+      setMeetingLinks([])
+      setLaunched(false)
+      setShowHistory(false)
+    } catch {}
+  }, [])
+
+  const deleteFromHistory = useCallback((historyId: string) => {
+    try {
+      const all = JSON.parse(localStorage.getItem('scenario-history') || '[]')
+      const filtered = all.filter((m: any) => m.id !== historyId)
+      localStorage.setItem('scenario-history', JSON.stringify(filtered))
+      setHistoryList(filtered.map((m: any) => ({ id: m.id, name: m.name, createdAt: m.createdAt, casesCount: m.cases?.length || 0, linesCount: m.script?.length || 0 })))
+    } catch {}
+  }, [])
 
   // Load voices
   useEffect(() => {
@@ -727,6 +805,8 @@ export default function ScenarioBuilder() {
 
       setIsGenerating(false)
       setGenStatus({ phase: 'done', current: totalSteps, total: totalSteps, detail: `Pret ! ${totalGenerated} videos + ${Object.keys(idleResults).length} idle`, log })
+      // Auto-save to history
+      saveScenarioToHistory()
     } catch (err) {
       // CRITICAL: Save whatever we have even on error
       if (Object.keys(videoResults).length > 0) {
@@ -740,7 +820,7 @@ export default function ScenarioBuilder() {
       const saved = Object.keys(videoResults).length
       setGenStatus({ phase: saved > 0 ? 'done' : 'error', current: currentStep, total: totalSteps, detail: saved > 0 ? `${saved} videos sauvees (erreur partielle)` : 'Erreur construction audio', log })
     }
-  }, [cases, lines, listeners])
+  }, [cases, lines, listeners, saveScenarioToHistory])
 
   // Launch — create meeting room with continuous videos + timeline
   const launchInMeeting = async () => {
@@ -822,10 +902,54 @@ export default function ScenarioBuilder() {
       <div style={{ background: '#111', borderBottom: '1px solid #333', padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h1 style={{ fontSize: 17, fontWeight: 700 }}>Scenario Builder</h1>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button
+            onClick={() => saveScenarioToHistory()}
+            style={{ fontSize: 11, padding: '4px 12px', borderRadius: 6, border: '1px solid #444', background: '#1a1a1a', color: '#a5b4fc', cursor: 'pointer', fontWeight: 600 }}
+            title="Sauvegarder le scenario actuel"
+          >
+            💾 Sauvegarder
+          </button>
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            style={{ fontSize: 11, padding: '4px 12px', borderRadius: 6, border: '1px solid #444', background: showHistory ? '#2d1f6e' : '#1a1a1a', color: '#a5b4fc', cursor: 'pointer', fontWeight: 600, position: 'relative' }}
+          >
+            📋 Historique {historyList.length > 0 && <span style={{ background: '#818cf8', color: 'white', borderRadius: 10, padding: '0 5px', fontSize: 9, marginLeft: 4 }}>{historyList.length}</span>}
+          </button>
           {launched && <span style={{ fontSize: 11, color: '#4ade80', fontWeight: 600 }}>● Reunion en cours</span>}
           <a href="/" style={{ color: '#818cf8', fontSize: 12, textDecoration: 'none' }}>Aller a la reunion</a>
         </div>
       </div>
+
+      {/* History panel */}
+      {showHistory && (
+        <div style={{ position: 'absolute', top: 45, right: 20, width: 380, maxHeight: 500, background: '#1a1a2e', border: '1px solid #333', borderRadius: 10, zIndex: 999, boxShadow: '0 10px 40px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: '#a5b4fc' }}>Historique des scenarios</span>
+            <button onClick={() => setShowHistory(false)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}>✕</button>
+          </div>
+          <div style={{ overflowY: 'auto', maxHeight: 440, padding: 8 }}>
+            {historyList.length === 0 ? (
+              <div style={{ color: '#555', fontSize: 12, textAlign: 'center', padding: 30 }}>Aucun scenario sauvegarde</div>
+            ) : historyList.map(h => (
+              <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 8, marginBottom: 4, background: '#111', border: '1px solid #2a2a2a', cursor: 'pointer' }}
+                onClick={() => loadScenarioFromHistory(h.id)}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>{h.name}</div>
+                  <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+                    {h.casesCount} participants · {h.linesCount} repliques · {new Date(h.createdAt).toLocaleDateString('fr-FR')} {new Date(h.createdAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteFromHistory(h.id) }}
+                  style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 12, padding: 4 }}
+                  title="Supprimer"
+                >🗑</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', height: 'calc(100vh - 45px)' }}>
         {/* Left: Cases config */}
