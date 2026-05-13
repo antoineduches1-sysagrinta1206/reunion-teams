@@ -71,7 +71,8 @@ export async function POST(request: NextRequest) {
 
         // Use raw PCM directly — NO processing (noise gate/fades were causing "chchch")
         const pcmData = fs.readFileSync(pcmFilePath)
-        const startByte = Math.floor(seg.startTime * PCM_RATE * 2)
+        const startSample = Math.floor(seg.startTime * PCM_RATE)
+        const startByte = startSample * 2
         const maxCopy = Math.min(pcmData.length, totalBytes - startByte)
 
         if (startByte >= 0 && startByte < totalBytes && maxCopy > 0) {

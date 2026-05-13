@@ -129,10 +129,15 @@ export async function POST(request: NextRequest) {
     const numSamples = pcmData.length / 2
 
     if (totalDuration <= maxSec) {
-      const fullB64 = `data:audio/wav;base64,${wavBuf.toString('base64')}`
+      // Save to file instead of returning base64 (avoids huge JSON responses)
+      const outDir = path.join(process.cwd(), 'public', 'audio-temp')
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
+      const baseName = wavPath ? path.basename(wavPath, '.wav') : 'inline'
+      const fname = `single-${baseName}-${Date.now()}.wav`
+      fs.writeFileSync(path.join(outDir, fname), wavBuf)
       return NextResponse.json({
         success: true,
-        chunks: [{ wavPath: wavPath || 'inline', duration: totalDuration, audioBase64: fullB64 }],
+        chunks: [{ wavPath: `/audio-temp/${fname}`, duration: totalDuration }],
         totalDuration,
       })
     }
@@ -145,7 +150,7 @@ export async function POST(request: NextRequest) {
     const outDir = path.join(process.cwd(), 'public', 'audio-temp')
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
 
-    const chunks: { wavPath: string; duration: number; audioBase64: string }[] = []
+    const chunks: { wavPath: string; duration: number }[] = []
     let offsetSample = 0
     let chunkIndex = 0
 
@@ -187,8 +192,7 @@ export async function POST(request: NextRequest) {
       const chunkWav = buildWavBuffer(chunkPcm)
       fs.writeFileSync(path.join(outDir, fname), chunkWav)
 
-      const chunkB64 = `data:audio/wav;base64,${chunkWav.toString('base64')}`
-      chunks.push({ wavPath: `/audio-temp/${fname}`, duration: chunkDuration, audioBase64: chunkB64 })
+      chunks.push({ wavPath: `/audio-temp/${fname}`, duration: chunkDuration })
       console.log(`[SPLIT] Chunk ${chunkIndex}: ${chunkDuration.toFixed(1)}s @ ${(offsetSample / PCM_RATE).toFixed(1)}s (${(chunkWav.length / 1024).toFixed(0)} KB)`)
 
       offsetSample = endSample

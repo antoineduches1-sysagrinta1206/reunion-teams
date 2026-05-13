@@ -641,20 +641,20 @@ export default function ScenarioBuilder() {
             const splitRes = await fetch('/api/split-audio', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ wavPath: audioTrack, wavBase64: audioB64, maxChunkSeconds: MAX_CHUNK_SEC }),
+              body: JSON.stringify({ wavPath: audioTrack, maxChunkSeconds: MAX_CHUNK_SEC }),
             })
             const splitData = await splitRes.json()
             if (!splitData.success) {
               addLog(`[VIDEO] ${c.label}: ERREUR split - ${splitData.error}`)
               continue
             }
-            const chunks = splitData.chunks as { wavPath: string; duration: number; audioBase64?: string }[]
+            const chunks = splitData.chunks as { wavPath: string; duration: number }[]
             participantChunkCounts[pid] = chunks.length
             addLog(`[VIDEO] ${c.label}: ${chunks.length} chunks`)
             for (let ci = 0; ci < chunks.length; ci++) {
               allJobs.push({
                 pid, label: c.label, chunkIndex: ci, totalChunks: chunks.length,
-                audioB64: chunks[ci].audioBase64 || null, audioPath: chunks[ci].wavPath,
+                audioB64: null, audioPath: chunks[ci].wavPath,
                 photoBase64: c.photoBase64, prompt: VIDEO_PROMPT,
                 filename: `chunk-${pid}-${ci}-${Date.now()}.mp4`,
               })
