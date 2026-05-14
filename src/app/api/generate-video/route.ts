@@ -176,9 +176,12 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'Crédit Replicate insuffisant. Recharge sur replicate.com/account/billing' }, { status: 402 })
         }
 
+        // Rate limit (429) — wait longer
+        const isRateLimit = createRes.status === 429 || errText.includes('throttled') || errText.includes('rate limit')
+
         if (attempt < MAX_RETRIES) {
-          const waitSec = attempt * 10
-          console.log(`[GEN] Retrying in ${waitSec}s...`)
+          const waitSec = isRateLimit ? attempt * 30 : attempt * 10
+          console.log(`[GEN] ${isRateLimit ? 'Rate limited' : 'Error'} — retrying in ${waitSec}s...`)
           await sleep(waitSec * 1000)
         } else {
           return NextResponse.json({ error: `Replicate error after ${MAX_RETRIES} attempts: ${errText.slice(0, 150)}` }, { status: 500 })

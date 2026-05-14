@@ -705,7 +705,7 @@ export default function ScenarioBuilder() {
             if (!vData.success || !vData.predictionId) {
               const errMsg = vData.error || 'unknown'
               addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} ERREUR - ${errMsg}`)
-              if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004')) continue
+              if (errMsg.includes('temporarily') || errMsg.includes('503') || errMsg.includes('E004') || errMsg.includes('throttled') || errMsg.includes('rate limit')) continue
               return // fatal error — skip chunk
             }
 
@@ -729,8 +729,32 @@ export default function ScenarioBuilder() {
         }
       }
 
-      // Launch ALL jobs in parallel
-      await Promise.all(allJobs.map(job => generateOneChunk(job)))
+      // Launch jobs with concurrency limit (Replicate rate limit: burst of 5, 60/min)
+      const CONCURRENCY = 3
+      const DELAY_BETWEEN_MS = 2000 // 2s between each launch to stay under rate limit
+      let running = 0
+      let jobIndex = 0
+      await new Promise<void>((resolve) => {
+        const launchNext = () => {
+          while (running < CONCURRENCY && jobIndex < allJobs.length) {
+            const job = allJobs[jobIndex++]
+            running++
+            const delay = (jobIndex - 1) * DELAY_BETWEEN_MS
+            setTimeout(() => {
+              generateOneChunk(job).finally(() => {
+                running--
+                if (jobIndex >= allJobs.length && running === 0) {
+                  resolve()
+                } else {
+                  launchNext()
+                }
+              })
+            }, Math.min(delay, DELAY_BETWEEN_MS)) // stagger first batch, then on-completion
+          }
+          if (allJobs.length === 0) resolve()
+        }
+        launchNext()
+      })
       addLog(`[VIDEO] ${completedJobs}/${allJobs.length} chunks generes`)
 
       // Step C: Concat chunks per participant (parallel)
