@@ -729,32 +729,19 @@ export default function ScenarioBuilder() {
         }
       }
 
-      // Launch jobs with concurrency limit (Replicate rate limit: burst of 5, 60/min)
-      const CONCURRENCY = 3
-      const DELAY_BETWEEN_MS = 2000 // 2s between each launch to stay under rate limit
-      let running = 0
-      let jobIndex = 0
-      await new Promise<void>((resolve) => {
-        const launchNext = () => {
-          while (running < CONCURRENCY && jobIndex < allJobs.length) {
-            const job = allJobs[jobIndex++]
-            running++
-            const delay = (jobIndex - 1) * DELAY_BETWEEN_MS
-            setTimeout(() => {
-              generateOneChunk(job).finally(() => {
-                running--
-                if (jobIndex >= allJobs.length && running === 0) {
-                  resolve()
-                } else {
-                  launchNext()
-                }
-              })
-            }, Math.min(delay, DELAY_BETWEEN_MS)) // stagger first batch, then on-completion
-          }
-          if (allJobs.length === 0) resolve()
+      // Launch jobs sequentially in small batches to avoid Replicate rate limit
+      // Replicate allows burst of 5 + 60/min — we do 2 at a time with 5s gap
+      const BATCH_SIZE = 2
+      for (let i = 0; i < allJobs.length; i += BATCH_SIZE) {
+        if (cancelledRef.current) break
+        const batch = allJobs.slice(i, i + BATCH_SIZE)
+        addLog(`[VIDEO] Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.map(j => `${j.label} chunk ${j.chunkIndex + 1}`).join(', ')}`)
+        await Promise.all(batch.map(job => generateOneChunk(job)))
+        // Wait 5s between batches to stay under rate limit
+        if (i + BATCH_SIZE < allJobs.length && !cancelledRef.current) {
+          await new Promise(r => setTimeout(r, 5000))
         }
-        launchNext()
-      })
+      }
       addLog(`[VIDEO] ${completedJobs}/${allJobs.length} chunks generes`)
 
       // Step C: Concat chunks per participant (parallel)
