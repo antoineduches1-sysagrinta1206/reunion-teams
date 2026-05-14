@@ -684,7 +684,7 @@ export default function ScenarioBuilder() {
         for (let retry = 0; retry < MAX_RETRIES; retry++) {
           if (cancelledRef.current) return
           if (retry > 0) {
-            const wait = retry * 15
+            const wait = retry * 60
             addLog(`[VIDEO] ${job.label}: chunk ${job.chunkIndex + 1} retry ${retry}/${MAX_RETRIES} dans ${wait}s...`)
             await new Promise(r => setTimeout(r, wait * 1000))
           }
@@ -729,17 +729,15 @@ export default function ScenarioBuilder() {
         }
       }
 
-      // Launch jobs sequentially in small batches to avoid Replicate rate limit
-      // Replicate allows burst of 5 + 60/min — we do 2 at a time with 5s gap
-      const BATCH_SIZE = 2
-      for (let i = 0; i < allJobs.length; i += BATCH_SIZE) {
+      // Launch jobs ONE AT A TIME to avoid Replicate throttle
+      for (let i = 0; i < allJobs.length; i++) {
         if (cancelledRef.current) break
-        const batch = allJobs.slice(i, i + BATCH_SIZE)
-        addLog(`[VIDEO] Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.map(j => `${j.label} chunk ${j.chunkIndex + 1}`).join(', ')}`)
-        await Promise.all(batch.map(job => generateOneChunk(job)))
-        // Wait 5s between batches to stay under rate limit
-        if (i + BATCH_SIZE < allJobs.length && !cancelledRef.current) {
-          await new Promise(r => setTimeout(r, 5000))
+        const job = allJobs[i]
+        addLog(`[VIDEO] (${i + 1}/${allJobs.length}) ${job.label} chunk ${job.chunkIndex + 1}...`)
+        await generateOneChunk(job)
+        // Wait 10s between predictions to stay well under rate limit
+        if (i < allJobs.length - 1 && !cancelledRef.current) {
+          await new Promise(r => setTimeout(r, 10000))
         }
       }
       addLog(`[VIDEO] ${completedJobs}/${allJobs.length} chunks generes`)
