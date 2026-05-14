@@ -257,16 +257,16 @@ function MeetingRoomInner() {
     return () => clearInterval(t)
   }, [joined])
 
-  // Timeline ticker — SIMPLE volume switching, ZERO interference
-  // - All videos play with muted=false, volume=0 (NOT muted=true — browsers block muted toggling)
-  // - Active speaker gets volume=1
-  // - NO drift correction, NO seeks, NO playbackRate changes during playback
-  // - Sync ONLY at speaker transitions (one-time seek while still at volume=0)
+  // Timeline ticker — volume switching + drift correction + idle crossfade control
+  // - Active speaker gets volume=1, all others volume=0
+  // - Periodic drift correction keeps video in sync with timeline
+  // - speakingId drives CSS opacity for idle/main crossfade
   useEffect(() => {
     if (!joined || !meetingData) return
 
     let lastSpeaker: string | null = null
     let logCounter = 0
+    let syncCounter = 0
 
     const tick = () => {
       if (playStartRef.current === 0) return
@@ -286,10 +286,10 @@ function MeetingRoomInner() {
         if (currentSpeaker) {
           const vid = videoRefs.current[currentSpeaker]
           if (vid) {
-            // One-time position sync (video is still at volume=0)
+            // Position sync at transition
             if (vid.duration > 0) {
               const expected = now <= vid.duration ? now : now % vid.duration
-              if (Math.abs(vid.currentTime - expected) > 0.15) {
+              if (Math.abs(vid.currentTime - expected) > 0.08) {
                 vid.currentTime = expected
               }
             }
@@ -302,6 +302,19 @@ function MeetingRoomInner() {
         const name = currentSpeaker ? meetingData.participants.find(p => p.id === currentSpeaker)?.name : 'silence'
         console.log(`[TICKER] t=${now.toFixed(1)}s → ${name}`)
         lastSpeaker = currentSpeaker
+      }
+
+      // ===== PERIODIC DRIFT CORRECTION (every ~2s) =====
+      syncCounter++
+      if (syncCounter % 10 === 0 && currentSpeaker) {
+        const vid = videoRefs.current[currentSpeaker]
+        if (vid && vid.duration > 0 && !vid.paused) {
+          const expected = now <= vid.duration ? now : now % vid.duration
+          const drift = Math.abs(vid.currentTime - expected)
+          if (drift > 0.12) {
+            vid.currentTime = expected
+          }
+        }
       }
 
       // ===== AFTER SCENARIO =====
@@ -559,7 +572,7 @@ function MeetingRoomInner() {
     return () => { cancelled = true; clearTimeout(t) }
   }, [joined, meetingData, startAllVideos])
 
-  // Start idle videos immediately after join (for crossfade during scenario)
+  // Start idle videos for ALL participants (speakers + listeners) — needed for smooth crossfade
   useEffect(() => {
     if (!joined || !meetingData) return
     let cancelled = false
@@ -573,14 +586,15 @@ function MeetingRoomInner() {
           idleVid.muted = true
           idleVid.loop = true
           idleVid.play().catch(() => {})
-          console.log(`[IDLE] ${p.name}: idle video started for crossfade`)
+          console.log(`[IDLE] ${p.name}: idle video started`)
         }
       })
     }
 
-    const t = setTimeout(startIdles, 1500)
-    const t2 = setTimeout(startIdles, 5000)
-    const t3 = setTimeout(startIdles, 10000)
+    // Start quickly + retry to catch late-loaded blob URLs
+    const t = setTimeout(startIdles, 500)
+    const t2 = setTimeout(startIdles, 2000)
+    const t3 = setTimeout(startIdles, 5000)
     return () => { cancelled = true; clearTimeout(t); clearTimeout(t2); clearTimeout(t3) }
   }, [joined, meetingData, idleBlobUrls])
 
@@ -614,14 +628,12 @@ function MeetingRoomInner() {
           }
         }
 
-        // Restart paused idle videos (listeners)
+        // Restart paused idle videos for ALL participants (needed for crossfade)
         const idleVid = idleVideoRefs.current[p.id]
-        if (idleVid && idleVid.paused && idleVid.readyState >= 2 && !idleVid.ended) {
-          if (!isSpeakerRole || meetingEndedRef.current) {
-            idleVid.muted = true
-            idleVid.loop = true
-            idleVid.play().catch(() => {})
-          }
+        if (idleVid && idleVid.paused && idleVid.readyState >= 2) {
+          idleVid.muted = true
+          idleVid.loop = true
+          idleVid.play().catch(() => {})
         }
       })
     }, 5000)
@@ -957,8 +969,8 @@ function MeetingRoomInner() {
                             style={{ opacity: 1 }}
                           />
                         )}
-                        {/* Idle video — for listeners: always visible. For speakers: hidden behind main, shown after scenario ends */}
-                        {(idleBlobUrls[p.id] || (!isSpeakerRole && p.idleVideoUrl)) && (
+                        {/* Idle video — covers main video when participant is NOT speaking (smooth crossfade) */}
+                        {(idleBlobUrls[p.id] || p.idleVideoUrl) && (
                           <video
                             ref={el => { idleVideoRefs.current[p.id] = el }}
                             src={idleBlobUrls[p.id] || p.idleVideoUrl}
@@ -969,10 +981,11 @@ function MeetingRoomInner() {
                             crossOrigin="anonymous"
                             className="absolute inset-0 w-full h-full object-cover"
                             style={{
-                              // Listeners: idle always on top. Speakers: idle on top only after scenario ends
-                              opacity: !isSpeakerRole ? 1 : (meetingEnded ? 1 : 0),
-                              zIndex: !isSpeakerRole ? 2 : (meetingEnded ? 2 : 0),
-                              transition: 'opacity 1s ease-in-out',
+                              // Show idle when NOT speaking (hides lip-sync artifacts + provides smooth listening pose)
+                              // Listeners: always visible. Speakers: visible when NOT their turn, hidden when speaking
+                              opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
+                              zIndex: 2,
+                              transition: 'opacity 0.5s ease-in-out',
                               pointerEvents: 'none',
                             }}
                           />
