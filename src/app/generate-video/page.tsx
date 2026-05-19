@@ -729,17 +729,8 @@ export default function ScenarioBuilder() {
         }
       }
 
-      // Launch jobs ONE AT A TIME to avoid Replicate throttle
-      for (let i = 0; i < allJobs.length; i++) {
-        if (cancelledRef.current) break
-        const job = allJobs[i]
-        addLog(`[VIDEO] (${i + 1}/${allJobs.length}) ${job.label} chunk ${job.chunkIndex + 1}...`)
-        await generateOneChunk(job)
-        // Wait 10s between predictions to stay well under rate limit
-        if (i < allJobs.length - 1 && !cancelledRef.current) {
-          await new Promise(r => setTimeout(r, 10000))
-        }
-      }
+      // Launch ALL jobs in parallel for maximum speed
+      await Promise.all(allJobs.map(job => generateOneChunk(job)))
       addLog(`[VIDEO] ${completedJobs}/${allJobs.length} chunks generes`)
 
       // Step C: Concat chunks per participant (parallel)
