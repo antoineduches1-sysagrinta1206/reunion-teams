@@ -282,10 +282,15 @@ function MeetingRoomInner() {
           if (oldVid) oldVid.volume = 0
         }
 
-        // 2. Sync + volume on for new speaker
+        // 2. Sync + volume on for new speaker (force unmute to bypass browser autoplay restrictions)
         if (currentSpeaker) {
           const vid = videoRefs.current[currentSpeaker]
           if (vid) {
+            // Force unmute — browsers may silently mute even when play() succeeds
+            if (vid.muted) {
+              vid.muted = false
+              console.log(`[TICKER] Force unmuted ${currentSpeaker}`)
+            }
             // Position sync at transition
             if (vid.duration > 0) {
               const expected = now <= vid.duration ? now : now % vid.duration
@@ -304,15 +309,21 @@ function MeetingRoomInner() {
         lastSpeaker = currentSpeaker
       }
 
-      // ===== PERIODIC DRIFT CORRECTION (every ~2s) =====
+      // ===== PERIODIC DRIFT CORRECTION + AUDIO GUARD (every ~2s) =====
       syncCounter++
       if (syncCounter % 10 === 0 && currentSpeaker) {
         const vid = videoRefs.current[currentSpeaker]
-        if (vid && vid.duration > 0 && !vid.paused) {
-          const expected = now <= vid.duration ? now : now % vid.duration
-          const drift = Math.abs(vid.currentTime - expected)
-          if (drift > 0.12) {
-            vid.currentTime = expected
+        if (vid) {
+          // Audio guard: continuously ensure active speaker is unmuted with volume
+          if (vid.muted) { vid.muted = false; console.log(`[TICKER] Audio guard: unmuted ${currentSpeaker}`) }
+          if (vid.volume < 1) vid.volume = 1
+          // Drift correction
+          if (vid.duration > 0 && !vid.paused) {
+            const expected = now <= vid.duration ? now : now % vid.duration
+            const drift = Math.abs(vid.currentTime - expected)
+            if (drift > 0.12) {
+              vid.currentTime = expected
+            }
           }
         }
       }
