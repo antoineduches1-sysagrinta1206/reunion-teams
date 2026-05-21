@@ -80,16 +80,13 @@ function MeetingRoomInner() {
   const playStartRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // WebRTC state — live audio/video between admin and client
-  const [remoteConnected, setRemoteConnected] = useState(false)
-  const [peerInMeeting, setPeerInMeeting] = useState(false) // true when we KNOW the other person is in the meeting (tile always shows)
+  // Jitsi Meet state — live audio/video between admin and client
+  const [jitsiReady, setJitsiReady] = useState(false)
+  const [peerInMeeting, setPeerInMeeting] = useState(false)
   const [remoteName, setRemoteName] = useState('')
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const jitsiContainerRef = useRef<HTMLDivElement>(null)
+  const jitsiApiRef = useRef<any>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
-  const remoteVideoRef = useRef<HTMLVideoElement>(null)
-  const remoteStreamRef = useRef<MediaStream | null>(null)
-  const signalingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const iceCandidateQueueRef = useRef<RTCIceCandidateInit[]>([])
 
   // Fetch meeting data — if template, show lobby to enter name then clone
   useEffect(() => {
@@ -280,236 +277,96 @@ function MeetingRoomInner() {
   }, [joined])
 
   // ============================================================
-  // WebRTC: Live audio/video between admin and client
+  // Jitsi Meet: Live audio/video between admin and client
+  // Uses Jitsi's own TURN/relay servers — works everywhere
   // ============================================================
-  const setupWebRTC = useCallback(async () => {
+  const setupJitsi = useCallback(() => {
+    if (!jitsiContainerRef.current) return
+    if (jitsiApiRef.current) return // Already initialized
+
     const role = isAdmin ? 'admin' : 'client'
-    console.log(`[WEBRTC] Setting up as ${role} for meeting ${meetingId}`)
+    const myName = isAdmin ? 'Admin' : (meetingData?.clientName || 'Client')
+    const roomName = `zoom-ia-${meetingId}`.replace(/[^a-zA-Z0-9-]/g, '')
+    console.log(`[JITSI] Setting up as ${role} in room ${roomName}`)
 
-    // Get local media (camera + microphone) — continue even if denied
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      localStreamRef.current = stream
-      if (clientVideoRef.current) {
-        clientVideoRef.current.srcObject = stream
-        clientVideoRef.current.play().catch(() => {})
+    // Load Jitsi external API script
+    const script = document.createElement('script')
+    script.src = 'https://meet.jit.si/external_api.js'
+    script.async = true
+    script.onload = () => {
+      if (!jitsiContainerRef.current) return
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const JitsiMeetExternalAPI = (window as any).JitsiMeetExternalAPI
+      if (!JitsiMeetExternalAPI) {
+        console.error('[JITSI] JitsiMeetExternalAPI not found')
+        return
       }
-      setClientCameraOn(true)
-    } catch (err) {
-      console.warn('[WEBRTC] Failed to get media:', err)
-      // Try video-only fallback
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        localStreamRef.current = stream
-        if (clientVideoRef.current) {
-          clientVideoRef.current.srcObject = stream
-          clientVideoRef.current.play().catch(() => {})
-        }
-        setClientCameraOn(true)
-      } catch {
-        console.warn('[WEBRTC] No camera available — continuing without local media (receive-only)')
-      }
-      // DO NOT return — continue setting up peer connection to receive remote stream
-    }
 
-    // Fetch TURN credentials directly from Metered.ca
-    let iceServers: RTCIceServer[] = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ]
-    try {
-      const turnRes = await fetch('https://zoom-meeting-ia.metered.live/api/v1/turn/credentials?apiKey=EB61DovfT36-jzB5Qf6MYrFwdj_In3YXItLmPBfAei3QzmBn')
-      if (turnRes.ok) {
-        const turnServers = await turnRes.json()
-        iceServers = [
-          { urls: 'stun:stun.l.google.com:19302' },
-          ...turnServers,
-        ]
-        console.log(`[WEBRTC] Got ${iceServers.length} ICE servers with TURN relay`)
-      } else {
-        console.warn(`[WEBRTC] Metered API error: ${turnRes.status}`)
-      }
-    } catch (err) {
-      console.warn('[WEBRTC] Failed to fetch TURN credentials', err)
-    }
-
-    // Create peer connection with STUN/TURN servers
-    const pc = new RTCPeerConnection({ iceServers })
-    peerConnectionRef.current = pc
-
-    // Add local tracks to peer connection (if available)
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, localStreamRef.current!)
-      })
-    } else {
-      // No local media — add transceivers to receive remote audio/video anyway
-      pc.addTransceiver('audio', { direction: 'recvonly' })
-      pc.addTransceiver('video', { direction: 'recvonly' })
-    }
-
-    // Handle incoming remote tracks
-    pc.ontrack = (event) => {
-      console.log(`[WEBRTC] Remote track received: ${event.track.kind}`)
-      if (!remoteStreamRef.current) {
-        remoteStreamRef.current = new MediaStream()
-      }
-      remoteStreamRef.current.addTrack(event.track)
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current
-        remoteVideoRef.current.play().catch(() => {})
-      }
-      setRemoteConnected(true)
-    }
-
-    // Log ICE candidates for debugging
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log(`[WEBRTC] ICE candidate: ${event.candidate.candidate.substring(0, 60)}...`)
-      } else {
-        console.log('[WEBRTC] ICE gathering complete')
-      }
-    }
-
-    pc.onconnectionstatechange = () => {
-      console.log(`[WEBRTC] Connection state: ${pc.connectionState}`)
-      if (pc.connectionState === 'connected') {
-        setRemoteConnected(true)
-      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        setRemoteConnected(false)
-      }
-    }
-
-    let iceRetryCount = 0
-    pc.oniceconnectionstatechange = () => {
-      console.log(`[WEBRTC] ICE state: ${pc.iceConnectionState}`)
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        setRemoteConnected(true)
-        iceRetryCount = 0
-      } else if (pc.iceConnectionState === 'failed' && iceRetryCount < 3) {
-        iceRetryCount++
-        console.log(`[WEBRTC] ICE failed — restart attempt ${iceRetryCount}/3`)
-        pc.restartIce()
-      }
-    }
-
-    // Helper: wait for ICE gathering to finish so ALL candidates are embedded in the SDP
-    const waitForIceGathering = (): Promise<void> => {
-      return new Promise((resolve) => {
-        if (pc.iceGatheringState === 'complete') { resolve(); return }
-        const check = () => {
-          if (pc.iceGatheringState === 'complete') {
-            pc.removeEventListener('icegatheringstatechange', check)
-            resolve()
-          }
-        }
-        pc.addEventListener('icegatheringstatechange', check)
-        // Safety timeout — don't wait forever
-        setTimeout(resolve, 5000)
-      })
-    }
-
-    if (!isAdmin) {
-      // CLIENT: Create offer, wait for ICE gathering, then send complete offer (vanilla ICE)
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      console.log('[WEBRTC] Client: gathering ICE candidates...')
-
-      await waitForIceGathering()
-      const completeOffer = pc.localDescription!
-      console.log(`[WEBRTC] Client offer ready (${completeOffer.sdp?.length} bytes SDP)`)
-
-      // Send complete offer (with all ICE candidates embedded in SDP)
-      await fetch('/api/meeting-signal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: completeOffer }),
+      const api = new JitsiMeetExternalAPI('meet.jit.si', {
+        roomName,
+        parentNode: jitsiContainerRef.current,
+        width: '100%',
+        height: '100%',
+        userInfo: { displayName: myName },
+        configOverwrite: {
+          startWithAudioMuted: false,
+          startWithVideoMuted: false,
+          prejoinPageEnabled: false,
+          disableDeepLinking: true,
+          disableInviteFunctions: true,
+          enableWelcomePage: false,
+          enableClosePage: false,
+          disableThirdPartyRequests: true,
+          p2p: { enabled: true },
+        },
+        interfaceConfigOverwrite: {
+          SHOW_JITSI_WATERMARK: false,
+          SHOW_WATERMARK_FOR_GUESTS: false,
+          SHOW_BRAND_WATERMARK: false,
+          SHOW_CHROME_EXTENSION_BANNER: false,
+          TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup'],
+          DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
+          HIDE_INVITE_MORE_HEADER: true,
+          MOBILE_APP_PROMO: false,
+          FILM_STRIP_MAX_HEIGHT: 0,
+          TOOLBAR_ALWAYS_VISIBLE: false,
+        },
       })
 
-      // Poll for admin answer — re-send complete offer until answered (resilient to server restarts)
-      let offerAccepted = false
-      signalingPollRef.current = setInterval(async () => {
-        try {
-          // Re-send complete offer until admin responds
-          if (!offerAccepted) {
-            await fetch('/api/meeting-signal', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: completeOffer }),
-            }).catch(() => {})
-          }
+      jitsiApiRef.current = api
+      setJitsiReady(true)
+      setPeerInMeeting(true)
+      console.log('[JITSI] Room created — waiting for participants')
 
-          const res = await fetch(`/api/meeting-signal?meetingId=${meetingId}&role=client`)
-          const data = await res.json()
+      api.addEventListener('participantJoined', (p: any) => {
+        console.log(`[JITSI] Participant joined: ${p.displayName || p.id}`)
+        setPeerInMeeting(true)
+        setRemoteName(p.displayName || (isAdmin ? 'Client' : 'Admin'))
+      })
 
-          if (data.adminAnswer && !pc.remoteDescription) {
-            console.log('[WEBRTC] Admin answer received (with ICE candidates)')
-            offerAccepted = true
-            setPeerInMeeting(true)
-            // Admin answer contains all admin ICE candidates in SDP — no separate exchange needed
-            await pc.setRemoteDescription(new RTCSessionDescription(data.adminAnswer))
-          }
-        } catch {}
-      }, 2000)
-    } else {
-      // ADMIN: Wait for client offer (with candidates), create answer, wait for ICE, send complete answer
-      let answerSent = false
-      signalingPollRef.current = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/meeting-signal?meetingId=${meetingId}&role=admin`)
-          const data = await res.json()
+      api.addEventListener('participantLeft', () => {
+        console.log('[JITSI] Participant left')
+      })
 
-          if (data.clientOffer && !pc.remoteDescription && !answerSent) {
-            answerSent = true
-            console.log('[WEBRTC] Client offer received (with ICE candidates) — creating answer')
-            setPeerInMeeting(true)
-            // Client offer contains all client ICE candidates in SDP
-            await pc.setRemoteDescription(new RTCSessionDescription(data.clientOffer))
-
-            const answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
-            console.log('[WEBRTC] Admin: gathering ICE candidates...')
-
-            await waitForIceGathering()
-            const completeAnswer = pc.localDescription!
-            console.log(`[WEBRTC] Admin answer ready (${completeAnswer.sdp?.length} bytes SDP)`)
-
-            // Send complete answer (with all ICE candidates embedded)
-            await fetch('/api/meeting-signal', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ meetingId, role: 'admin', type: 'answer', data: completeAnswer }),
-            })
-            console.log('[WEBRTC] Admin answer sent (complete with ICE)')
-          }
-        } catch (err) {
-          console.warn('[WEBRTC] Admin poll error:', err)
-        }
-      }, 1500)
+      api.addEventListener('videoConferenceLeft', () => {
+        console.log('[JITSI] Conference left')
+      })
     }
-  }, [meetingId, isAdmin])
+    document.head.appendChild(script)
+  }, [meetingId, isAdmin, meetingData?.clientName])
 
-  // Start WebRTC after joining
+  // Start Jitsi after joining
   useEffect(() => {
     if (!joined) return
-    // Admin: if client already in meeting, show their tile immediately
-    if (isAdmin && meetingData?.state?.clientJoined) {
-      setPeerInMeeting(true)
-    }
-    setupWebRTC()
+    setPeerInMeeting(true) // Always show the Jitsi tile
+    setupJitsi()
     return () => {
-      // Cleanup WebRTC on unmount
-      if (signalingPollRef.current) clearInterval(signalingPollRef.current)
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close()
-        peerConnectionRef.current = null
-      }
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(t => t.stop())
-        localStreamRef.current = null
+      if (jitsiApiRef.current) {
+        jitsiApiRef.current.dispose()
+        jitsiApiRef.current = null
       }
     }
-  }, [joined, setupWebRTC])
+  }, [joined, setupJitsi])
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
@@ -1153,9 +1010,9 @@ function MeetingRoomInner() {
                   const vid = videoRefs.current[p.id]
                   if (vid) { vid.volume = 0; vid.pause() }
                 })
-                if (peerConnectionRef.current) {
-                  peerConnectionRef.current.close()
-                  peerConnectionRef.current = null
+                if (jitsiApiRef.current) {
+                  jitsiApiRef.current.dispose()
+                  jitsiApiRef.current = null
                 }
                 if (localStreamRef.current) {
                   localStreamRef.current.getTracks().forEach(t => t.stop())
@@ -1353,40 +1210,13 @@ function MeetingRoomInner() {
                 </div>
               </div>
 
-              {/* Remote peer tile — admin sees client, client sees admin */}
+              {/* Jitsi Meet tile — live video call between admin and client */}
               {peerInMeeting && (
                 <div
+                  ref={jitsiContainerRef}
                   className="relative rounded-lg overflow-hidden ring-2 ring-[#5b5fc7]"
-                  style={{ backgroundColor: '#2d2d2d' }}
-                >
-                  {/* Remote video (shows when WebRTC video is connected) */}
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="absolute inset-0 w-full h-full object-cover"
-                    style={{ transform: 'scaleX(-1)', display: remoteConnected ? 'block' : 'none' }}
-                  />
-                  {/* Avatar placeholder when no video */}
-                  {!remoteConnected && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]">
-                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-2xl font-bold">
-                        {(isAdmin ? (meetingData.clientName || 'C') : 'A')[0].toUpperCase()}
-                      </div>
-                    </div>
-                  )}
-                  <div className="absolute bottom-0 left-0 right-0 z-20">
-                    <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
-                      {remoteConnected ? <Mic className="w-3 h-3 text-white" /> : <MicOff className="w-3 h-3 text-red-400" />}
-                      <span className="text-[13px] text-white font-medium drop-shadow-sm">
-                        {isAdmin ? (meetingData.clientName || 'Client') : 'Admin'}
-                      </span>
-                      {!remoteConnected && (
-                        <span className="text-[10px] text-gray-400 ml-1">connexion...</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                  style={{ backgroundColor: '#1a1a2e', minHeight: '200px' }}
+                />
               )}
             </div>
           </div>
