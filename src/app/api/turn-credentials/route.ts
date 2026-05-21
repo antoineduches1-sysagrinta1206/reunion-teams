@@ -23,7 +23,7 @@ export async function GET() {
 
   try {
     const res = await fetch(
-      `https://zoom.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`,
+      `https://zoom-meeting-ia.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`,
       { next: { revalidate: 3600 } } // Cache for 1 hour
     )
     
