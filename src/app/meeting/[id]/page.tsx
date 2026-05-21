@@ -355,18 +355,26 @@ function MeetingRoomInner() {
     document.head.appendChild(script)
   }, [meetingId, isAdmin, meetingData?.clientName])
 
-  // Start Jitsi after joining
+  // Start Jitsi after joining — separate effect to ensure container is in DOM
   useEffect(() => {
     if (!joined) return
-    setPeerInMeeting(true) // Always show the Jitsi tile
-    setupJitsi()
+    setPeerInMeeting(true)
+  }, [joined])
+
+  useEffect(() => {
+    if (!joined || !peerInMeeting) return
+    // Small delay to ensure the container div is rendered in the DOM
+    const timer = setTimeout(() => {
+      setupJitsi()
+    }, 200)
     return () => {
+      clearTimeout(timer)
       if (jitsiApiRef.current) {
         jitsiApiRef.current.dispose()
         jitsiApiRef.current = null
       }
     }
-  }, [joined, setupJitsi])
+  }, [joined, peerInMeeting, setupJitsi])
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
@@ -1211,7 +1219,7 @@ function MeetingRoomInner() {
               </div>
 
               {/* Jitsi Meet tile — live video call between admin and client */}
-              {peerInMeeting && (
+              {joined && (
                 <div
                   ref={jitsiContainerRef}
                   className="relative rounded-lg overflow-hidden ring-2 ring-[#5b5fc7]"
