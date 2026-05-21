@@ -91,11 +91,13 @@ export async function POST(request: NextRequest) {
 
   switch (type) {
     case 'offer':
-      signal.clientOffer = data
-      signal.adminAnswer = null // Reset answer when new offer comes
-      signal.clientCandidates = []
-      signal.adminCandidates = []
-      console.log(`[SIGNAL] ${meetingId}: Client offer stored`)
+      // Only reset candidates if this is a genuinely new offer (admin hasn't answered yet)
+      if (!signal.adminAnswer) {
+        signal.clientOffer = data
+        // Don't reset candidates — they accumulate alongside the offer
+        console.log(`[SIGNAL] ${meetingId}: Client offer stored`)
+      }
+      // If admin already answered, ignore re-sent offers (connection is establishing)
       break
     case 'answer':
       signal.adminAnswer = data

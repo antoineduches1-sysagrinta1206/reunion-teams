@@ -328,6 +328,10 @@ function MeetingRoomInner() {
       localStreamRef.current.getTracks().forEach(track => {
         pc.addTrack(track, localStreamRef.current!)
       })
+    } else {
+      // No local media — add transceivers to receive remote audio/video anyway
+      pc.addTransceiver('audio', { direction: 'recvonly' })
+      pc.addTransceiver('video', { direction: 'recvonly' })
     }
 
     // Handle incoming remote tracks
@@ -366,6 +370,13 @@ function MeetingRoomInner() {
         setRemoteConnected(true)
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         setRemoteConnected(false)
+      }
+    }
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WEBRTC] ICE state: ${pc.iceConnectionState}`)
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setRemoteConnected(true)
       }
     }
 
