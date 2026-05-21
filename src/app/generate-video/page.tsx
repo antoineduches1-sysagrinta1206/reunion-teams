@@ -652,11 +652,24 @@ export default function ScenarioBuilder() {
       const allJobs: ChunkJob[] = []
       const participantChunkCounts: Record<string, number> = {}
 
+      // Helper: fetch WAV from public URL and return as data URI (resilient to Railway redeploys)
+      const fetchWavAsBase64 = async (wavPath: string): Promise<string | null> => {
+        try {
+          const res = await fetch(wavPath)
+          if (!res.ok) return null
+          const blob = await res.blob()
+          return await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onloadend = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+        } catch { return null }
+      }
+
       for (const pid of usedCases) {
         const c = cases.find(cc => cc.id === pid)!
         const VIDEO_PROMPT = buildParticipantPrompt(pid)
         const audioTrack = combData.audioTracks[pid]
-        const audioB64 = combData.audioBase64?.[pid] || null
 
         if (totalMeetingDuration > MAX_CHUNK_SEC) {
           try {
@@ -672,11 +685,12 @@ export default function ScenarioBuilder() {
             }
             const chunks = splitData.chunks as { wavPath: string; duration: number }[]
             participantChunkCounts[pid] = chunks.length
-            addLog(`[VIDEO] ${c.label}: ${chunks.length} chunks`)
+            addLog(`[VIDEO] ${c.label}: ${chunks.length} chunks — fetching audio...`)
             for (let ci = 0; ci < chunks.length; ci++) {
+              const chunkB64 = await fetchWavAsBase64(chunks[ci].wavPath)
               allJobs.push({
                 pid, label: c.label, chunkIndex: ci, totalChunks: chunks.length,
-                audioB64: null, audioPath: chunks[ci].wavPath,
+                audioB64: chunkB64, audioPath: chunks[ci].wavPath,
                 photoBase64: c.photoBase64, prompt: VIDEO_PROMPT,
                 filename: `chunk-${pid}-${ci}-${Date.now()}.mp4`,
               })
@@ -685,6 +699,7 @@ export default function ScenarioBuilder() {
             addLog(`[VIDEO] ${c.label}: ERREUR split - ${err instanceof Error ? err.message : 'inconnue'}`)
           }
         } else {
+          const audioB64 = await fetchWavAsBase64(audioTrack)
           participantChunkCounts[pid] = 1
           allJobs.push({
             pid, label: c.label, chunkIndex: 0, totalChunks: 1,
