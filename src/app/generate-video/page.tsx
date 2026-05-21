@@ -80,6 +80,9 @@ export default function ScenarioBuilder() {
   const [launched, setLaunched] = useState(false)
   const [meetingLinks, setMeetingLinks] = useState<string[]>([])
   const [adminLink, setAdminLink] = useState<string | null>(null)
+  const [clientJoinedSession, setClientJoinedSession] = useState<string | null>(null) // session ID where client joined
+  const [sessionIds, setSessionIds] = useState<string[]>([])
+
   const [listeners, setListeners] = useState<ListenerConfig[]>([])
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const voiceFileRefs = useRef<Record<string, HTMLInputElement | null>>({})
@@ -175,6 +178,25 @@ export default function ScenarioBuilder() {
       }
     })
   }, [])
+
+  // Poll sessions to detect when a client joins
+  useEffect(() => {
+    if (sessionIds.length === 0 || !adminLink || clientJoinedSession) return
+    const poll = setInterval(async () => {
+      for (const sid of sessionIds) {
+        try {
+          const res = await fetch(`/api/meeting?id=${sid}`)
+          const data = await res.json()
+          if (data.success && data.meeting?.state?.clientJoined) {
+            setClientJoinedSession(sid)
+            clearInterval(poll)
+            break
+          }
+        } catch {}
+      }
+    }, 3000)
+    return () => clearInterval(poll)
+  }, [sessionIds, adminLink, clientJoinedSession])
 
   const handlePhoto = async (caseId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -883,7 +905,7 @@ export default function ScenarioBuilder() {
         if (bulkData.success && bulkData.sessionIds) {
           const links = bulkData.sessionIds.map((sid: string) => `${window.location.origin}/meeting/${sid}`)
           setMeetingLinks(links)
-          // Admin key works for ANY session from this template (same adminKey inherited)
+          setSessionIds(bulkData.sessionIds)
           setAdminLink(data.adminKey)
           setGenStatus(prev => prev ? { ...prev, detail: `${links.length} liens single-use generes !` } : null)
         } else {
@@ -1274,49 +1296,48 @@ export default function ScenarioBuilder() {
                       </div>
                     ))}
 
-                    {/* Admin join section */}
-                    {adminLink && (
+                    {/* Admin join — shows when client has joined */}
+                    {adminLink && clientJoinedSession && (
                       <div style={{
-                        marginTop: 16, padding: 14, borderRadius: 10,
+                        marginTop: 16, padding: 16, borderRadius: 12,
                         background: 'linear-gradient(135deg, #1e1b4b, #312e81)',
-                        border: '1px solid #6366f1',
+                        border: '2px solid #818cf8',
+                        textAlign: 'center',
+                        animation: 'pulse 2s infinite',
                       }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc', marginBottom: 8 }}>
-                          🎙️ REJOINDRE LA REUNION (pour parler avec le client en direct) :
+                        <div style={{ fontSize: 20, marginBottom: 6 }}>🟢</div>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: '#a5b4fc', marginBottom: 4 }}>
+                          Un client a rejoint la reunion !
                         </div>
-                        <div style={{ fontSize: 10, color: '#7c7cac', marginBottom: 10 }}>
-                          Quand le client ouvre son lien, clique sur &quot;Rejoindre&quot; a cote du meme lien pour entrer dans sa reunion.
-                          Tu pourras le voir et lui parler pendant que l&apos;IA parle aussi.
+                        <div style={{ fontSize: 11, color: '#7c7cac', marginBottom: 12 }}>
+                          Clique pour le rejoindre — tu pourras le voir et lui parler en direct
                         </div>
-                        {meetingLinks.map((link, idx) => {
-                          const fullAdminLink = `${link}?admin=${adminLink}`
-                          return (
-                            <div key={`admin-${idx}`} style={{
-                              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
-                              background: '#0a0a0a', borderRadius: 8, padding: '6px 10px',
-                            }}>
-                              <span style={{ color: '#a5b4fc', fontSize: 10, fontWeight: 700, minWidth: 50 }}>Lien {idx + 1}</span>
-                              <button
-                                onClick={() => { navigator.clipboard.writeText(fullAdminLink); }}
-                                style={{
-                                  padding: '4px 10px', borderRadius: 6, border: 'none', fontSize: 10, fontWeight: 700,
-                                  background: '#6366f1', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
-                                }}
-                              >
-                                Copier lien admin
-                              </button>
-                              <button
-                                onClick={() => { window.open(fullAdminLink, '_blank'); }}
-                                style={{
-                                  padding: '4px 10px', borderRadius: 6, border: 'none', fontSize: 10, fontWeight: 700,
-                                  background: '#4f46e5', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
-                                }}
-                              >
-                                Rejoindre
-                              </button>
-                            </div>
-                          )
-                        })}
+                        <button
+                          onClick={() => {
+                            const url = `${window.location.origin}/meeting/${clientJoinedSession}?admin=${adminLink}`
+                            window.open(url, '_blank')
+                          }}
+                          style={{
+                            padding: '12px 32px', borderRadius: 10, border: 'none', fontSize: 14, fontWeight: 800,
+                            background: 'linear-gradient(135deg, #6366f1, #4f46e5)', color: 'white', cursor: 'pointer',
+                            boxShadow: '0 4px 20px rgba(99,102,241,0.5)',
+                          }}
+                        >
+                          🎙️ Rejoindre en direct
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Waiting for client message */}
+                    {adminLink && !clientJoinedSession && (
+                      <div style={{
+                        marginTop: 16, padding: 12, borderRadius: 10,
+                        background: '#1a1a2e', border: '1px solid #333',
+                        textAlign: 'center',
+                      }}>
+                        <div style={{ fontSize: 11, color: '#7c7cac' }}>
+                          ⏳ En attente qu&apos;un client rejoigne... (detection automatique)
+                        </div>
                       </div>
                     )}
 
