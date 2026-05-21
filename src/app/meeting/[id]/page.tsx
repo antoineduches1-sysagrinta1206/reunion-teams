@@ -285,11 +285,10 @@ function MeetingRoomInner() {
     const role = isAdmin ? 'admin' : 'client'
     console.log(`[WEBRTC] Setting up as ${role} for meeting ${meetingId}`)
 
-    // Get local media (camera + microphone)
+    // Get local media (camera + microphone) — continue even if denied
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       localStreamRef.current = stream
-      // Show local camera in client video ref
       if (clientVideoRef.current) {
         clientVideoRef.current.srcObject = stream
         clientVideoRef.current.play().catch(() => {})
@@ -306,8 +305,10 @@ function MeetingRoomInner() {
           clientVideoRef.current.play().catch(() => {})
         }
         setClientCameraOn(true)
-      } catch { console.warn('[WEBRTC] No camera available') }
-      return
+      } catch {
+        console.warn('[WEBRTC] No camera available — continuing without local media (receive-only)')
+      }
+      // DO NOT return — continue setting up peer connection to receive remote stream
     }
 
     // Create peer connection with STUN/TURN servers
@@ -322,10 +323,12 @@ function MeetingRoomInner() {
     })
     peerConnectionRef.current = pc
 
-    // Add local tracks to peer connection
-    localStreamRef.current.getTracks().forEach(track => {
-      pc.addTrack(track, localStreamRef.current!)
-    })
+    // Add local tracks to peer connection (if available)
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, localStreamRef.current!)
+      })
+    }
 
     // Handle incoming remote tracks
     pc.ontrack = (event) => {
