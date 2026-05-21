@@ -90,8 +90,8 @@ function MeetingRoomInner() {
       .then(r => r.json())
       .then(data => {
         if (data.success && data.meeting) {
-          // Check if single-use link was already consumed
-          if (data.meeting.singleUse && data.meeting.consumed) {
+          // Check if single-use link was already consumed (admin bypasses this)
+          if (data.meeting.singleUse && data.meeting.consumed && !isAdmin) {
             setLoadError('This meeting link has already been used.')
           } else if (data.meeting.isTemplate) {
             // This is a template link — show lobby, clone on join
