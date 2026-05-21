@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import MeetingToolbar from '../../../components/MeetingToolbar'
 import { Mic, MicOff, MoreHorizontal, X, StopCircle } from 'lucide-react'
 
@@ -30,12 +30,16 @@ interface MeetingData {
   ended?: boolean
   isTemplate?: boolean
   templateId?: string
+  clientName?: string
 }
 
 function MeetingRoomInner() {
   const params = useParams()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const meetingId = params.id as string
+  const adminKey = searchParams.get('admin') || ''
+  const isAdmin = !!adminKey
 
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -68,6 +72,16 @@ function MeetingRoomInner() {
   const idleVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
   const playStartRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // WebRTC state — live audio/video between admin and client
+  const [remoteConnected, setRemoteConnected] = useState(false)
+  const [remoteName, setRemoteName] = useState('')
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const localStreamRef = useRef<MediaStream | null>(null)
+  const remoteVideoRef = useRef<HTMLVideoElement>(null)
+  const remoteStreamRef = useRef<MediaStream | null>(null)
+  const signalingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const iceCandidateQueueRef = useRef<RTCIceCandidateInit[]>([])
 
   // Fetch meeting data — if template, show lobby to enter name then clone
   useEffect(() => {
@@ -256,6 +270,198 @@ function MeetingRoomInner() {
     const t = setInterval(() => setElapsed(p => p + 1), 1000)
     return () => clearInterval(t)
   }, [joined])
+
+  // ============================================================
+  // WebRTC: Live audio/video between admin and client
+  // ============================================================
+  const setupWebRTC = useCallback(async () => {
+    const role = isAdmin ? 'admin' : 'client'
+    console.log(`[WEBRTC] Setting up as ${role} for meeting ${meetingId}`)
+
+    // Get local media (camera + microphone)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      localStreamRef.current = stream
+      // Show local camera in client video ref
+      if (clientVideoRef.current) {
+        clientVideoRef.current.srcObject = stream
+        clientVideoRef.current.play().catch(() => {})
+      }
+      setClientCameraOn(true)
+    } catch (err) {
+      console.warn('[WEBRTC] Failed to get media:', err)
+      // Try video-only fallback
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        localStreamRef.current = stream
+        if (clientVideoRef.current) {
+          clientVideoRef.current.srcObject = stream
+          clientVideoRef.current.play().catch(() => {})
+        }
+        setClientCameraOn(true)
+      } catch { console.warn('[WEBRTC] No camera available') }
+      return
+    }
+
+    // Create peer connection with STUN/TURN servers
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    })
+    peerConnectionRef.current = pc
+
+    // Add local tracks to peer connection
+    localStreamRef.current.getTracks().forEach(track => {
+      pc.addTrack(track, localStreamRef.current!)
+    })
+
+    // Handle incoming remote tracks
+    pc.ontrack = (event) => {
+      console.log(`[WEBRTC] Remote track received: ${event.track.kind}`)
+      if (!remoteStreamRef.current) {
+        remoteStreamRef.current = new MediaStream()
+      }
+      remoteStreamRef.current.addTrack(event.track)
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current
+        remoteVideoRef.current.play().catch(() => {})
+      }
+      setRemoteConnected(true)
+    }
+
+    // Handle ICE candidates — send to signal server
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        fetch('/api/meeting-signal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            meetingId,
+            role,
+            type: 'candidate',
+            data: event.candidate.toJSON(),
+          }),
+        }).catch(() => {})
+      }
+    }
+
+    pc.onconnectionstatechange = () => {
+      console.log(`[WEBRTC] Connection state: ${pc.connectionState}`)
+      if (pc.connectionState === 'connected') {
+        setRemoteConnected(true)
+      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        setRemoteConnected(false)
+      }
+    }
+
+    if (!isAdmin) {
+      // CLIENT: Create offer and wait for admin answer
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+      console.log('[WEBRTC] Client offer created')
+
+      await fetch('/api/meeting-signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: offer }),
+      })
+
+      // Poll for admin answer
+      let lastCandidateCount = 0
+      signalingPollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/meeting-signal?meetingId=${meetingId}&role=client`)
+          const data = await res.json()
+
+          if (data.adminAnswer && !pc.remoteDescription) {
+            console.log('[WEBRTC] Admin answer received')
+            await pc.setRemoteDescription(new RTCSessionDescription(data.adminAnswer))
+            // Add queued ICE candidates
+            for (const c of iceCandidateQueueRef.current) {
+              await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+            }
+            iceCandidateQueueRef.current = []
+          }
+
+          // Add new ICE candidates from admin
+          if (data.adminCandidates && data.adminCandidates.length > lastCandidateCount) {
+            const newCandidates = data.adminCandidates.slice(lastCandidateCount)
+            for (const c of newCandidates) {
+              if (pc.remoteDescription) {
+                await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+              } else {
+                iceCandidateQueueRef.current.push(c)
+              }
+            }
+            lastCandidateCount = data.adminCandidates.length
+          }
+        } catch {}
+      }, 1500)
+    } else {
+      // ADMIN: Wait for client offer, then create answer
+      let lastCandidateCount = 0
+      signalingPollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/meeting-signal?meetingId=${meetingId}&role=admin`)
+          const data = await res.json()
+
+          if (data.clientOffer && !pc.remoteDescription) {
+            console.log('[WEBRTC] Client offer received — creating answer')
+            await pc.setRemoteDescription(new RTCSessionDescription(data.clientOffer))
+
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+
+            await fetch('/api/meeting-signal', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ meetingId, role: 'admin', type: 'answer', data: answer }),
+            })
+            console.log('[WEBRTC] Admin answer sent')
+
+            // Add queued ICE candidates
+            for (const c of iceCandidateQueueRef.current) {
+              await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+            }
+            iceCandidateQueueRef.current = []
+          }
+
+          // Add new ICE candidates from client
+          if (data.clientCandidates && data.clientCandidates.length > lastCandidateCount) {
+            const newCandidates = data.clientCandidates.slice(lastCandidateCount)
+            for (const c of newCandidates) {
+              if (pc.remoteDescription) {
+                await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+              } else {
+                iceCandidateQueueRef.current.push(c)
+              }
+            }
+            lastCandidateCount = data.clientCandidates.length
+          }
+        } catch {}
+      }, 1500)
+    }
+  }, [meetingId, isAdmin])
+
+  // Start WebRTC after joining
+  useEffect(() => {
+    if (!joined) return
+    setupWebRTC()
+    return () => {
+      // Cleanup WebRTC on unmount
+      if (signalingPollRef.current) clearInterval(signalingPollRef.current)
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close()
+        peerConnectionRef.current = null
+      }
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop())
+        localStreamRef.current = null
+      }
+    }
+  }, [joined, setupWebRTC])
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
@@ -487,8 +693,8 @@ function MeetingRoomInner() {
   // Handle join — requires user click (browser autoplay policy)
   // If template: clone first, then redirect to session
   const handleJoin = useCallback(async () => {
-    if (isTemplate) {
-      // Clone the template into a new session
+    if (isTemplate && !isAdmin) {
+      // Clone the template into a new session (client only — admin joins directly)
       try {
         const res = await fetch('/api/meeting', {
           method: 'PATCH',
@@ -498,7 +704,7 @@ function MeetingRoomInner() {
         const data = await res.json()
         if (data.success && data.sessionId) {
           console.log(`[MEETING] Template cloned -> session ${data.sessionId}`)
-          router.push(`/meeting/${data.sessionId}`)
+          router.push(`/meeting/${data.sessionId}${adminKey ? `?admin=${adminKey}` : ''}`)
           return
         }
       } catch (err) {
@@ -507,19 +713,21 @@ function MeetingRoomInner() {
       return
     }
 
-    // Check single-use: attempt clientJoin and handle rejection
-    try {
-      const joinRes = await fetch('/api/meeting', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: meetingId, action: 'clientJoin', clientName: displayName }),
-      })
-      const joinData = await joinRes.json()
-      if (joinData.expired) {
-        setLoadError('This meeting link has already been used.')
-        return
-      }
-    } catch {}
+    // Check single-use: attempt clientJoin and handle rejection (skip for admin)
+    if (!isAdmin) {
+      try {
+        const joinRes = await fetch('/api/meeting', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: meetingId, action: 'clientJoin', clientName: displayName }),
+        })
+        const joinData = await joinRes.json()
+        if (joinData.expired) {
+          setLoadError('This meeting link has already been used.')
+          return
+        }
+      } catch {}
+    }
 
     // Normal join — unlock audio context with BOTH methods (required by browsers)
     const el = audioElRef.current
@@ -536,21 +744,16 @@ function MeetingRoomInner() {
       setTimeout(() => ctx.close(), 100)
     } catch {}
     setJoined(true)
-    // Save client name on server
+    // Save name on server
+    const nameToSave = isAdmin ? (displayName || 'Admin') : displayName
     fetch('/api/meeting', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: meetingId, action: 'setClientName', clientName: displayName }),
+      body: JSON.stringify({ id: meetingId, action: 'setClientName', clientName: nameToSave }),
     }).catch(() => {})
-    // Activate client webcam (video only, NEVER mic)
-    navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(stream => {
-      if (clientVideoRef.current) {
-        clientVideoRef.current.srcObject = stream
-        clientVideoRef.current.play().catch(() => {})
-      }
-      setClientCameraOn(true)
-    }).catch(() => { console.log('[CLIENT] No webcam available') })
-  }, [isTemplate, meetingId, displayName, router])
+    // WebRTC setupWebRTC() handles camera + mic capture after join
+    // (triggered by the useEffect watching `joined` state)
+  }, [isTemplate, isAdmin, adminKey, meetingId, displayName, router])
 
   // After joining: wait for video elements to mount, then start playback
   useEffect(() => {
@@ -681,7 +884,7 @@ function MeetingRoomInner() {
 
   // --- JOIN / LOBBY SCREEN (Teams-style pre-join) ---
   if (!joined) {
-    const canJoin = isTemplate || preloadDone
+    const canJoin = isTemplate || preloadDone || isAdmin
     return (
       <div className="h-screen flex flex-col bg-[#f5f5f5] overflow-hidden">
         <audio ref={audioElRef} />
@@ -842,7 +1045,7 @@ function MeetingRoomInner() {
   }
 
   // --- MEETING VIEW ---
-  const totalTiles = meetingData.participants.length + 1 // AI tiles + client tile
+  const totalTiles = meetingData.participants.length + 1 + (remoteConnected ? 1 : 0) // AI tiles + client tile + remote peer
   const getResponsiveCols = () => {
     if (typeof window === 'undefined') return 2
     const w = window.innerWidth
@@ -1070,13 +1273,47 @@ function MeetingRoomInner() {
                 )}
                 <div className="absolute bottom-0 left-0 right-0 z-20">
                   <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
-                    <div className="rounded-full p-0.5 bg-red-600">
-                      <MicOff className="w-3 h-3 text-white" />
+                    <div className={`rounded-full p-0.5 ${localStreamRef.current?.getAudioTracks().length ? '' : 'bg-red-600'}`}>
+                      {localStreamRef.current?.getAudioTracks().length
+                        ? <Mic className="w-3 h-3 text-white" />
+                        : <MicOff className="w-3 h-3 text-white" />
+                      }
                     </div>
                     <span className="text-[13px] text-white font-medium drop-shadow-sm">{displayName} (You)</span>
                   </div>
                 </div>
               </div>
+
+              {/* Remote peer tile — admin sees client, client sees admin */}
+              {remoteConnected && (
+                <div
+                  className="relative rounded-lg overflow-hidden ring-2 ring-[#5b5fc7]"
+                  style={{ backgroundColor: '#2d2d2d' }}
+                >
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ transform: 'scaleX(-1)' }}
+                  />
+                  {!remoteConnected && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
+                        ?
+                      </div>
+                    </div>
+                  )}
+                  <div className="absolute bottom-0 left-0 right-0 z-20">
+                    <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
+                      <Mic className="w-3 h-3 text-white" />
+                      <span className="text-[13px] text-white font-medium drop-shadow-sm">
+                        {isAdmin ? (meetingData.clientName || 'Client') : 'Admin'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
