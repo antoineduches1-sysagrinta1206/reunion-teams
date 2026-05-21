@@ -870,6 +870,9 @@ export default function ScenarioBuilder() {
       })
       const data = await res.json()
       if (data.success && data.meetingId) {
+        // Save admin key for joining sessions as admin
+        setAdminLink(data.adminKey)
+
         // Generate 5 single-use session links from the template
         const bulkRes = await fetch('/api/meeting', {
           method: 'PATCH',
@@ -880,6 +883,8 @@ export default function ScenarioBuilder() {
         if (bulkData.success && bulkData.sessionIds) {
           const links = bulkData.sessionIds.map((sid: string) => `${window.location.origin}/meeting/${sid}`)
           setMeetingLinks(links)
+          // Admin key works for ANY session from this template (same adminKey inherited)
+          setAdminLink(data.adminKey)
           setGenStatus(prev => prev ? { ...prev, detail: `${links.length} liens single-use generes !` } : null)
         } else {
           // Fallback: use template link directly
@@ -1269,6 +1274,52 @@ export default function ScenarioBuilder() {
                       </div>
                     ))}
 
+                    {/* Admin join section */}
+                    {adminLink && (
+                      <div style={{
+                        marginTop: 16, padding: 14, borderRadius: 10,
+                        background: 'linear-gradient(135deg, #1e1b4b, #312e81)',
+                        border: '1px solid #6366f1',
+                      }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc', marginBottom: 8 }}>
+                          🎙️ REJOINDRE LA REUNION (pour parler avec le client en direct) :
+                        </div>
+                        <div style={{ fontSize: 10, color: '#7c7cac', marginBottom: 10 }}>
+                          Quand le client ouvre son lien, clique sur &quot;Rejoindre&quot; a cote du meme lien pour entrer dans sa reunion.
+                          Tu pourras le voir et lui parler pendant que l&apos;IA parle aussi.
+                        </div>
+                        {meetingLinks.map((link, idx) => {
+                          const fullAdminLink = `${link}?admin=${adminLink}`
+                          return (
+                            <div key={`admin-${idx}`} style={{
+                              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
+                              background: '#0a0a0a', borderRadius: 8, padding: '6px 10px',
+                            }}>
+                              <span style={{ color: '#a5b4fc', fontSize: 10, fontWeight: 700, minWidth: 50 }}>Lien {idx + 1}</span>
+                              <button
+                                onClick={() => { navigator.clipboard.writeText(fullAdminLink); }}
+                                style={{
+                                  padding: '4px 10px', borderRadius: 6, border: 'none', fontSize: 10, fontWeight: 700,
+                                  background: '#6366f1', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
+                                }}
+                              >
+                                Copier lien admin
+                              </button>
+                              <button
+                                onClick={() => { window.open(fullAdminLink, '_blank'); }}
+                                style={{
+                                  padding: '4px 10px', borderRadius: 6, border: 'none', fontSize: 10, fontWeight: 700,
+                                  background: '#4f46e5', color: 'white', cursor: 'pointer', whiteSpace: 'nowrap',
+                                }}
+                              >
+                                Rejoindre
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
                     <div style={{ marginTop: 12, display: 'flex', gap: 12, justifyContent: 'center' }}>
                       <button
                         onClick={() => { navigator.clipboard.writeText(meetingLinks.join('\n')); }}
@@ -1278,7 +1329,7 @@ export default function ScenarioBuilder() {
                           boxShadow: '0 4px 20px rgba(16,185,129,0.4)',
                         }}
                       >
-                        Copier tous les liens
+                        Copier tous les liens client
                       </button>
                     </div>
                   </>

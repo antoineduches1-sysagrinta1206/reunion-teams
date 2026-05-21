@@ -564,29 +564,19 @@ function MeetingRoomInner() {
         console.log(`[STATE] t=${now.toFixed(1)}s spk=${currentSpeaker || '-'} | ${states}`)
       }
 
-      // ===== MEETING END =====
+      // ===== AI SCENARIO END (NOT meeting end) =====
+      // When AI finishes: just stop AI videos, show idle. Meeting stays alive for WebRTC discussion.
+      // Meeting only ends when admin manually ends it via admin panel.
       if (now > meetingData.totalDuration && !meetingEndedRef.current) {
         meetingEndedRef.current = true
         setMeetingEnded(true)
-        console.log('[MEETING] Scenario ended — ejecting client')
+        console.log('[MEETING] AI scenario ended — switching to idle (meeting stays alive for discussion)')
         meetingData.participants.forEach(p => {
           const mainVid = videoRefs.current[p.id]
-          const idleVid = idleVideoRefs.current[p.id]
           if (mainVid) { mainVid.volume = 0; mainVid.pause() }
-          if (idleVid) { idleVid.pause() }
+          // Idle videos keep playing (natural listening pose)
         })
-        if (clientVideoRef.current?.srcObject) {
-          const tracks = (clientVideoRef.current.srcObject as MediaStream).getTracks()
-          tracks.forEach(t => t.stop())
-          clientVideoRef.current.srcObject = null
-        }
-        setClientCameraOn(false)
-        setMeetingKilled(true)
-        fetch('/api/meeting', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: meetingId, action: 'end' }),
-        }).catch(() => {})
+        setSpeakingId(null)
       }
     }
 
@@ -1101,6 +1091,33 @@ function MeetingRoomInner() {
         <div className="flex items-center gap-1 sm:gap-2">
           {scenarioStatus && (
             <span className="text-[10px] sm:text-[11px] text-[#5b5fc7] font-medium truncate max-w-[100px] sm:max-w-none">{scenarioStatus}</span>
+          )}
+          {isAdmin && !meetingKilled && (
+            <button
+              onClick={() => {
+                // Admin ends meeting for everyone
+                setMeetingKilled(true)
+                meetingData.participants.forEach(p => {
+                  const vid = videoRefs.current[p.id]
+                  if (vid) { vid.volume = 0; vid.pause() }
+                })
+                if (peerConnectionRef.current) {
+                  peerConnectionRef.current.close()
+                  peerConnectionRef.current = null
+                }
+                if (localStreamRef.current) {
+                  localStreamRef.current.getTracks().forEach(t => t.stop())
+                }
+                fetch('/api/meeting', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: meetingId, action: 'end' }),
+                }).catch(() => {})
+              }}
+              className="bg-red-600 hover:bg-red-500 text-white text-[10px] sm:text-[11px] font-bold px-2 sm:px-3 py-1 rounded transition-colors"
+            >
+              Fin de reunion
+            </button>
           )}
           <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5 text-gray-500 cursor-pointer" />
         </div>
