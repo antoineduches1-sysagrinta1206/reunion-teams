@@ -308,6 +308,9 @@ function MeetingRoomInner() {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
       ],
     })
     peerConnectionRef.current = pc
@@ -362,21 +365,33 @@ function MeetingRoomInner() {
       await pc.setLocalDescription(offer)
       console.log('[WEBRTC] Client offer created')
 
+      // Send offer immediately
       await fetch('/api/meeting-signal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: offer }),
       })
 
-      // Poll for admin answer
+      // Poll for admin answer — re-send offer every cycle until admin answers (resilient to server restarts)
       let lastCandidateCount = 0
+      let offerAccepted = false
       signalingPollRef.current = setInterval(async () => {
         try {
+          // Re-send offer until admin responds (in case server restarted and lost it)
+          if (!offerAccepted && pc.localDescription) {
+            await fetch('/api/meeting-signal', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: pc.localDescription }),
+            }).catch(() => {})
+          }
+
           const res = await fetch(`/api/meeting-signal?meetingId=${meetingId}&role=client`)
           const data = await res.json()
 
           if (data.adminAnswer && !pc.remoteDescription) {
             console.log('[WEBRTC] Admin answer received')
+            offerAccepted = true
             await pc.setRemoteDescription(new RTCSessionDescription(data.adminAnswer))
             // Add queued ICE candidates
             for (const c of iceCandidateQueueRef.current) {
@@ -398,7 +413,7 @@ function MeetingRoomInner() {
             lastCandidateCount = data.adminCandidates.length
           }
         } catch {}
-      }, 1500)
+      }, 2000)
     } else {
       // ADMIN: Wait for client offer, then create answer
       let lastCandidateCount = 0
