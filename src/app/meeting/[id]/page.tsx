@@ -349,19 +349,12 @@ function MeetingRoomInner() {
       setRemoteConnected(true)
     }
 
-    // Handle ICE candidates — send to signal server
+    // Log ICE candidates for debugging
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        fetch('/api/meeting-signal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            meetingId,
-            role,
-            type: 'candidate',
-            data: event.candidate.toJSON(),
-          }),
-        }).catch(() => {})
+        console.log(`[WEBRTC] ICE candidate: ${event.candidate.candidate.substring(0, 60)}...`)
+      } else {
+        console.log('[WEBRTC] ICE gathering complete')
       }
     }
 
@@ -381,30 +374,49 @@ function MeetingRoomInner() {
       }
     }
 
+    // Helper: wait for ICE gathering to finish so ALL candidates are embedded in the SDP
+    const waitForIceGathering = (): Promise<void> => {
+      return new Promise((resolve) => {
+        if (pc.iceGatheringState === 'complete') { resolve(); return }
+        const check = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener('icegatheringstatechange', check)
+            resolve()
+          }
+        }
+        pc.addEventListener('icegatheringstatechange', check)
+        // Safety timeout — don't wait forever
+        setTimeout(resolve, 5000)
+      })
+    }
+
     if (!isAdmin) {
-      // CLIENT: Create offer and wait for admin answer
+      // CLIENT: Create offer, wait for ICE gathering, then send complete offer (vanilla ICE)
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      console.log('[WEBRTC] Client offer created')
+      console.log('[WEBRTC] Client: gathering ICE candidates...')
 
-      // Send offer immediately
+      await waitForIceGathering()
+      const completeOffer = pc.localDescription!
+      console.log(`[WEBRTC] Client offer ready (${completeOffer.sdp?.length} bytes SDP)`)
+
+      // Send complete offer (with all ICE candidates embedded in SDP)
       await fetch('/api/meeting-signal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: offer }),
+        body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: completeOffer }),
       })
 
-      // Poll for admin answer — re-send offer every cycle until admin answers (resilient to server restarts)
-      let lastCandidateCount = 0
+      // Poll for admin answer — re-send complete offer until answered (resilient to server restarts)
       let offerAccepted = false
       signalingPollRef.current = setInterval(async () => {
         try {
-          // Re-send offer until admin responds (in case server restarted and lost it)
-          if (!offerAccepted && pc.localDescription) {
+          // Re-send complete offer until admin responds
+          if (!offerAccepted) {
             await fetch('/api/meeting-signal', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: pc.localDescription }),
+              body: JSON.stringify({ meetingId, role: 'client', type: 'offer', data: completeOffer }),
             }).catch(() => {})
           }
 
@@ -412,74 +424,48 @@ function MeetingRoomInner() {
           const data = await res.json()
 
           if (data.adminAnswer && !pc.remoteDescription) {
-            console.log('[WEBRTC] Admin answer received')
+            console.log('[WEBRTC] Admin answer received (with ICE candidates)')
             offerAccepted = true
             setPeerInMeeting(true)
+            // Admin answer contains all admin ICE candidates in SDP — no separate exchange needed
             await pc.setRemoteDescription(new RTCSessionDescription(data.adminAnswer))
-            // Add queued ICE candidates
-            for (const c of iceCandidateQueueRef.current) {
-              await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
-            }
-            iceCandidateQueueRef.current = []
-          }
-
-          // Add new ICE candidates from admin
-          if (data.adminCandidates && data.adminCandidates.length > lastCandidateCount) {
-            const newCandidates = data.adminCandidates.slice(lastCandidateCount)
-            for (const c of newCandidates) {
-              if (pc.remoteDescription) {
-                await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
-              } else {
-                iceCandidateQueueRef.current.push(c)
-              }
-            }
-            lastCandidateCount = data.adminCandidates.length
           }
         } catch {}
       }, 2000)
     } else {
-      // ADMIN: Wait for client offer, then create answer
-      let lastCandidateCount = 0
+      // ADMIN: Wait for client offer (with candidates), create answer, wait for ICE, send complete answer
+      let answerSent = false
       signalingPollRef.current = setInterval(async () => {
         try {
           const res = await fetch(`/api/meeting-signal?meetingId=${meetingId}&role=admin`)
           const data = await res.json()
 
-          if (data.clientOffer && !pc.remoteDescription) {
-            console.log('[WEBRTC] Client offer received — creating answer')
+          if (data.clientOffer && !pc.remoteDescription && !answerSent) {
+            answerSent = true
+            console.log('[WEBRTC] Client offer received (with ICE candidates) — creating answer')
             setPeerInMeeting(true)
+            // Client offer contains all client ICE candidates in SDP
             await pc.setRemoteDescription(new RTCSessionDescription(data.clientOffer))
 
             const answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
+            console.log('[WEBRTC] Admin: gathering ICE candidates...')
 
+            await waitForIceGathering()
+            const completeAnswer = pc.localDescription!
+            console.log(`[WEBRTC] Admin answer ready (${completeAnswer.sdp?.length} bytes SDP)`)
+
+            // Send complete answer (with all ICE candidates embedded)
             await fetch('/api/meeting-signal', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ meetingId, role: 'admin', type: 'answer', data: answer }),
+              body: JSON.stringify({ meetingId, role: 'admin', type: 'answer', data: completeAnswer }),
             })
-            console.log('[WEBRTC] Admin answer sent')
-
-            // Add queued ICE candidates
-            for (const c of iceCandidateQueueRef.current) {
-              await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
-            }
-            iceCandidateQueueRef.current = []
+            console.log('[WEBRTC] Admin answer sent (complete with ICE)')
           }
-
-          // Add new ICE candidates from client
-          if (data.clientCandidates && data.clientCandidates.length > lastCandidateCount) {
-            const newCandidates = data.clientCandidates.slice(lastCandidateCount)
-            for (const c of newCandidates) {
-              if (pc.remoteDescription) {
-                await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
-              } else {
-                iceCandidateQueueRef.current.push(c)
-              }
-            }
-            lastCandidateCount = data.clientCandidates.length
-          }
-        } catch {}
+        } catch (err) {
+          console.warn('[WEBRTC] Admin poll error:', err)
+        }
       }, 1500)
     }
   }, [meetingId, isAdmin])

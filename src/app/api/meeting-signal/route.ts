@@ -91,13 +91,9 @@ export async function POST(request: NextRequest) {
 
   switch (type) {
     case 'offer':
-      // Only reset candidates if this is a genuinely new offer (admin hasn't answered yet)
-      if (!signal.adminAnswer) {
-        signal.clientOffer = data
-        // Don't reset candidates — they accumulate alongside the offer
-        console.log(`[SIGNAL] ${meetingId}: Client offer stored`)
-      }
-      // If admin already answered, ignore re-sent offers (connection is establishing)
+      // Store/update the client offer (vanilla ICE: candidates are embedded in SDP)
+      signal.clientOffer = data
+      console.log(`[SIGNAL] ${meetingId}: Client offer stored (${data?.sdp?.length || 0} bytes)`)
       break
     case 'answer':
       signal.adminAnswer = data
