@@ -312,24 +312,25 @@ function MeetingRoomInner() {
       // DO NOT return — continue setting up peer connection to receive remote stream
     }
 
-    // Fetch TURN credentials from server (Metered.ca free tier)
+    // Fetch TURN credentials directly from Metered.ca
     let iceServers: RTCIceServer[] = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
     ]
     try {
-      const turnRes = await fetch('/api/turn-credentials')
-      const turnData = await turnRes.json()
-      if (turnData.iceServers) {
-        iceServers = turnData.iceServers
-        const hasTurn = iceServers.some((s: RTCIceServer) => {
-          const u = Array.isArray(s.urls) ? s.urls[0] : s.urls
-          return u?.startsWith('turn:') || u?.startsWith('turns:')
-        })
-        console.log(`[WEBRTC] Got ${iceServers.length} ICE servers, TURN=${hasTurn}${turnData.error ? ` (error: ${turnData.error})` : ''}`)
+      const turnRes = await fetch('https://zoom-meeting-ia.metered.live/api/v1/turn/credentials?apiKey=EB61DovfT36-jzB5Qf6MYrFwdj_In3YXItLmPBfAei3QzmBn')
+      if (turnRes.ok) {
+        const turnServers = await turnRes.json()
+        iceServers = [
+          { urls: 'stun:stun.l.google.com:19302' },
+          ...turnServers,
+        ]
+        console.log(`[WEBRTC] Got ${iceServers.length} ICE servers with TURN relay`)
+      } else {
+        console.warn(`[WEBRTC] Metered API error: ${turnRes.status}`)
       }
     } catch (err) {
-      console.warn('[WEBRTC] Failed to fetch TURN credentials — using STUN only', err)
+      console.warn('[WEBRTC] Failed to fetch TURN credentials', err)
     }
 
     // Create peer connection with STUN/TURN servers
