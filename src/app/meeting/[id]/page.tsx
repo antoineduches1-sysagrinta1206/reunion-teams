@@ -31,6 +31,13 @@ interface MeetingData {
   isTemplate?: boolean
   templateId?: string
   clientName?: string
+  singleUse?: boolean
+  consumed?: boolean
+  state?: {
+    started: boolean
+    startedAt: number | null
+    clientJoined: boolean
+  }
 }
 
 function MeetingRoomInner() {
@@ -777,8 +784,12 @@ function MeetingRoomInner() {
       console.log(`[MEETING] tryStart attempt=${attempts}, speakers=${speakerRefs.length}/${speakers.length}, listeners=${listenerRefs.length}/${listeners.length}`)
 
       if (ready) {
-        console.log(`[MEETING] All refs ready — starting videos`)
-        startAllVideos()
+        // Admin syncs to the client's timeline instead of restarting from 0
+        const syncTime = (isAdmin && meetingData.state?.startedAt)
+          ? (Date.now() - meetingData.state.startedAt) / 1000
+          : 0
+        console.log(`[MEETING] All refs ready — starting videos (sync=${syncTime.toFixed(1)}s, admin=${isAdmin})`)
+        startAllVideos(syncTime)
       } else if (attempts < 100) {
         attempts++
         setTimeout(tryStart, 150)
