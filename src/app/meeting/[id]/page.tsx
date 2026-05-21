@@ -82,6 +82,7 @@ function MeetingRoomInner() {
 
   // WebRTC state — live audio/video between admin and client
   const [remoteConnected, setRemoteConnected] = useState(false)
+  const [peerInMeeting, setPeerInMeeting] = useState(false) // true when we KNOW the other person is in the meeting (tile always shows)
   const [remoteName, setRemoteName] = useState('')
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
@@ -413,6 +414,7 @@ function MeetingRoomInner() {
           if (data.adminAnswer && !pc.remoteDescription) {
             console.log('[WEBRTC] Admin answer received')
             offerAccepted = true
+            setPeerInMeeting(true)
             await pc.setRemoteDescription(new RTCSessionDescription(data.adminAnswer))
             // Add queued ICE candidates
             for (const c of iceCandidateQueueRef.current) {
@@ -445,6 +447,7 @@ function MeetingRoomInner() {
 
           if (data.clientOffer && !pc.remoteDescription) {
             console.log('[WEBRTC] Client offer received — creating answer')
+            setPeerInMeeting(true)
             await pc.setRemoteDescription(new RTCSessionDescription(data.clientOffer))
 
             const answer = await pc.createAnswer()
@@ -484,6 +487,10 @@ function MeetingRoomInner() {
   // Start WebRTC after joining
   useEffect(() => {
     if (!joined) return
+    // Admin: if client already in meeting, show their tile immediately
+    if (isAdmin && meetingData?.state?.clientJoined) {
+      setPeerInMeeting(true)
+    }
     setupWebRTC()
     return () => {
       // Cleanup WebRTC on unmount
@@ -1075,7 +1082,7 @@ function MeetingRoomInner() {
   }
 
   // --- MEETING VIEW ---
-  const totalTiles = meetingData.participants.length + 1 + (remoteConnected ? 1 : 0) // AI tiles + client tile + remote peer
+  const totalTiles = meetingData.participants.length + 1 + (peerInMeeting ? 1 : 0) // AI tiles + client tile + remote peer
   const getResponsiveCols = () => {
     if (typeof window === 'undefined') return 2
     const w = window.innerWidth
@@ -1342,31 +1349,36 @@ function MeetingRoomInner() {
               </div>
 
               {/* Remote peer tile — admin sees client, client sees admin */}
-              {remoteConnected && (
+              {peerInMeeting && (
                 <div
                   className="relative rounded-lg overflow-hidden ring-2 ring-[#5b5fc7]"
                   style={{ backgroundColor: '#2d2d2d' }}
                 >
+                  {/* Remote video (shows when WebRTC video is connected) */}
                   <video
                     ref={remoteVideoRef}
                     autoPlay
                     playsInline
                     className="absolute inset-0 w-full h-full object-cover"
-                    style={{ transform: 'scaleX(-1)' }}
+                    style={{ transform: 'scaleX(-1)', display: remoteConnected ? 'block' : 'none' }}
                   />
+                  {/* Avatar placeholder when no video */}
                   {!remoteConnected && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
-                        ?
+                    <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]">
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-2xl font-bold">
+                        {(isAdmin ? (meetingData.clientName || 'C') : 'A')[0].toUpperCase()}
                       </div>
                     </div>
                   )}
                   <div className="absolute bottom-0 left-0 right-0 z-20">
                     <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
-                      <Mic className="w-3 h-3 text-white" />
+                      {remoteConnected ? <Mic className="w-3 h-3 text-white" /> : <MicOff className="w-3 h-3 text-red-400" />}
                       <span className="text-[13px] text-white font-medium drop-shadow-sm">
                         {isAdmin ? (meetingData.clientName || 'Client') : 'Admin'}
                       </span>
+                      {!remoteConnected && (
+                        <span className="text-[10px] text-gray-400 ml-1">connexion...</span>
+                      )}
                     </div>
                   </div>
                 </div>
