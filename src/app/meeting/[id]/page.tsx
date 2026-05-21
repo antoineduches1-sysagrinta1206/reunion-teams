@@ -312,16 +312,24 @@ function MeetingRoomInner() {
       // DO NOT return — continue setting up peer connection to receive remote stream
     }
 
+    // Fetch TURN credentials from server (Metered.ca free tier)
+    let iceServers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+    try {
+      const turnRes = await fetch('/api/turn-credentials')
+      const turnData = await turnRes.json()
+      if (turnData.iceServers) {
+        iceServers = turnData.iceServers
+        console.log(`[WEBRTC] Got ${iceServers.length} ICE servers (including TURN)`)
+      }
+    } catch {
+      console.warn('[WEBRTC] Failed to fetch TURN credentials — using STUN only')
+    }
+
     // Create peer connection with STUN/TURN servers
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-      ],
-    })
+    const pc = new RTCPeerConnection({ iceServers })
     peerConnectionRef.current = pc
 
     // Add local tracks to peer connection (if available)
@@ -367,10 +375,16 @@ function MeetingRoomInner() {
       }
     }
 
+    let iceRetryCount = 0
     pc.oniceconnectionstatechange = () => {
       console.log(`[WEBRTC] ICE state: ${pc.iceConnectionState}`)
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         setRemoteConnected(true)
+        iceRetryCount = 0
+      } else if (pc.iceConnectionState === 'failed' && iceRetryCount < 3) {
+        iceRetryCount++
+        console.log(`[WEBRTC] ICE failed — restart attempt ${iceRetryCount}/3`)
+        pc.restartIce()
       }
     }
 
