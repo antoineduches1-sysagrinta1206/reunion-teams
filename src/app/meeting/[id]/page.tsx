@@ -322,10 +322,14 @@ function MeetingRoomInner() {
       const turnData = await turnRes.json()
       if (turnData.iceServers) {
         iceServers = turnData.iceServers
-        console.log(`[WEBRTC] Got ${iceServers.length} ICE servers (including TURN)`)
+        const hasTurn = iceServers.some((s: RTCIceServer) => {
+          const u = Array.isArray(s.urls) ? s.urls[0] : s.urls
+          return u?.startsWith('turn:') || u?.startsWith('turns:')
+        })
+        console.log(`[WEBRTC] Got ${iceServers.length} ICE servers, TURN=${hasTurn}${turnData.error ? ` (error: ${turnData.error})` : ''}`)
       }
-    } catch {
-      console.warn('[WEBRTC] Failed to fetch TURN credentials — using STUN only')
+    } catch (err) {
+      console.warn('[WEBRTC] Failed to fetch TURN credentials — using STUN only', err)
     }
 
     // Create peer connection with STUN/TURN servers
