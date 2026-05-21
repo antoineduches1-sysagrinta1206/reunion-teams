@@ -29,6 +29,7 @@ interface MeetingSummary {
   templateId?: string
   clientName?: string
   totalDuration?: number
+  adminKey?: string
   state?: {
     started?: boolean
     startedAt?: number | null
@@ -300,6 +301,17 @@ export default function AdminMeetings() {
                       <ExternalLink className="w-3.5 h-3.5" />
                       Ouvrir reunion
                     </a>
+                    {!selected.ended && selected.adminKey && (
+                      <a
+                        href={`/meeting/${selected.id}?admin=${selected.adminKey}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors animate-pulse"
+                      >
+                        <Mic className="w-3.5 h-3.5" />
+                        Rejoindre en direct
+                      </a>
+                    )}
                     {!selected.ended && (
                       <button
                         onClick={() => handleEndMeeting(selected.id)}

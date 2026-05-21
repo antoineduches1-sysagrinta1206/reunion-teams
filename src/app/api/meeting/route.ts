@@ -100,6 +100,7 @@ export async function GET(request: NextRequest) {
           clientName: data.clientName,
           totalDuration: data.totalDuration,
           state: data.state,
+          adminKey: data.adminKey,
         }
       } catch { return null }
     }).filter(Boolean)
