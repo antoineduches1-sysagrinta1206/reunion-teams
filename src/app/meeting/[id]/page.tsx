@@ -289,11 +289,11 @@ function MeetingRoomInner() {
   const iceServersRef = useRef<RTCIceServer[]>([
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
-    { urls: 'turn:a.relay.metered.ca:80?transport=tcp', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
-    { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
-    { urls: 'turns:a.relay.metered.ca:443?transport=tcp', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
   ])
+  const iceRestartCountRef = useRef(0)
 
   const createPeerConnection = useCallback((remoteSocketId: string) => {
     console.log(`[WEBRTC] Creating peer connection for remote: ${remoteSocketId}`)
@@ -349,9 +349,23 @@ function MeetingRoomInner() {
       console.log(`[WEBRTC] ICE state: ${pc.iceConnectionState}`)
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         setRemoteConnected(true)
+        iceRestartCountRef.current = 0
       } else if (pc.iceConnectionState === 'failed') {
-        console.error('[WEBRTC] ICE connection FAILED — attempting restart')
-        pc.restartIce()
+        if (iceRestartCountRef.current < 3) {
+          iceRestartCountRef.current++
+          console.warn(`[WEBRTC] ICE FAILED — restart attempt ${iceRestartCountRef.current}/3`)
+          // Create new offer with iceRestart flag
+          pc.createOffer({ iceRestart: true }).then(offer => {
+            return pc.setLocalDescription(offer)
+          }).then(() => {
+            if (remoteSocketIdRef.current && socketRef.current) {
+              console.log('[WEBRTC] 📤 Sending ICE restart offer')
+              socketRef.current.emit('offer', { to: remoteSocketIdRef.current, offer: pc.localDescription })
+            }
+          }).catch(err => console.error('[WEBRTC] ICE restart failed:', err))
+        } else {
+          console.error('[WEBRTC] ICE FAILED after 3 restarts — giving up')
+        }
       }
     }
 
@@ -359,6 +373,7 @@ function MeetingRoomInner() {
       console.log(`[WEBRTC] Connection state: ${pc.connectionState}`)
       if (pc.connectionState === 'connected') {
         setRemoteConnected(true)
+        iceRestartCountRef.current = 0
       } else if (pc.connectionState === 'failed') {
         setRemoteConnected(false)
       }
@@ -413,30 +428,26 @@ function MeetingRoomInner() {
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        // Disable tracks immediately — user starts with camera/mic OFF
-        stream.getVideoTracks().forEach(t => { t.enabled = false })
-        stream.getAudioTracks().forEach(t => { t.enabled = false })
         localStreamRef.current = stream
         if (clientVideoRef.current) {
           clientVideoRef.current.srcObject = stream
           clientVideoRef.current.play().catch(() => {})
         }
-        setClientCameraOn(false)
-        setClientMicOn(false)
-        console.log(`[WEBRTC] Local media acquired (disabled): ${stream.getTracks().map(t => `${t.kind}:enabled=${t.enabled}`).join(', ')}`)
+        setClientCameraOn(true)
+        setClientMicOn(true)
+        console.log(`[WEBRTC] Local media acquired: ${stream.getTracks().map(t => `${t.kind}:enabled=${t.enabled}`).join(', ')}`)
       } catch (err) {
-        console.warn('[WEBRTC] Camera/mic denied, trying video only:', err)
+        console.warn('[WEBRTC] Camera/mic denied, trying audio only:', err)
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-          stream.getVideoTracks().forEach(t => { t.enabled = false })
+          const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true })
           localStreamRef.current = stream
-          if (clientVideoRef.current) {
-            clientVideoRef.current.srcObject = stream
-            clientVideoRef.current.play().catch(() => {})
-          }
           setClientCameraOn(false)
+          setClientMicOn(true)
+          console.log('[WEBRTC] Audio only acquired')
         } catch {
           console.warn('[WEBRTC] No media at all — receive only mode')
+          setClientCameraOn(false)
+          setClientMicOn(false)
         }
       }
 
