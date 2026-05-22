@@ -66,6 +66,7 @@ function MeetingRoomInner() {
   const meetingEndedRef = useRef(false)
   const clientVideoRef = useRef<HTMLVideoElement>(null)
   const [clientCameraOn, setClientCameraOn] = useState(false)
+  const [clientMicOn, setClientMicOn] = useState(false)
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set())
   const [meetingKilled, setMeetingKilled] = useState(false) // admin ended the meeting permanently
 
@@ -389,27 +390,32 @@ function MeetingRoomInner() {
     const userName = isAdmin ? 'Admin' : (meetingData?.clientName || displayName || 'Client')
     console.log(`[SOCKET] Connecting as "${userName}" to room ${meetingId}`)
 
-    // Get local media first
+    // Get local media — acquire tracks but start with them DISABLED (camera/mic OFF)
     const initMedia = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        // Disable tracks immediately — user starts with camera/mic OFF
+        stream.getVideoTracks().forEach(t => { t.enabled = false })
+        stream.getAudioTracks().forEach(t => { t.enabled = false })
         localStreamRef.current = stream
         if (clientVideoRef.current) {
           clientVideoRef.current.srcObject = stream
           clientVideoRef.current.play().catch(() => {})
         }
-        setClientCameraOn(true)
-        console.log(`[WEBRTC] Local media acquired: ${stream.getTracks().map(t => t.kind).join(', ')}`)
+        setClientCameraOn(false)
+        setClientMicOn(false)
+        console.log(`[WEBRTC] Local media acquired (disabled): ${stream.getTracks().map(t => `${t.kind}:enabled=${t.enabled}`).join(', ')}`)
       } catch (err) {
         console.warn('[WEBRTC] Camera/mic denied, trying video only:', err)
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+          stream.getVideoTracks().forEach(t => { t.enabled = false })
           localStreamRef.current = stream
           if (clientVideoRef.current) {
             clientVideoRef.current.srcObject = stream
             clientVideoRef.current.play().catch(() => {})
           }
-          setClientCameraOn(true)
+          setClientCameraOn(false)
         } catch {
           console.warn('[WEBRTC] No media at all — receive only mode')
         }
@@ -1051,15 +1057,15 @@ function MeetingRoomInner() {
               <div className="flex items-center gap-3 mt-3 px-1">
                 <button
                   onClick={() => {
-                    if (clientCameraOn) {
-                      if (clientVideoRef.current?.srcObject) {
-                        (clientVideoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop())
-                        clientVideoRef.current.srcObject = null
-                      }
-                      setClientCameraOn(false)
+                    const stream = localStreamRef.current
+                    if (stream) {
+                      const newState = !clientCameraOn
+                      stream.getVideoTracks().forEach(t => { t.enabled = newState })
+                      setClientCameraOn(newState)
                     } else {
-                      navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(stream => {
-                        if (clientVideoRef.current) clientVideoRef.current.srcObject = stream
+                      navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(s => {
+                        localStreamRef.current = s
+                        if (clientVideoRef.current) clientVideoRef.current.srcObject = s
                         setClientCameraOn(true)
                       }).catch(() => {})
                     }
@@ -1262,10 +1268,34 @@ function MeetingRoomInner() {
       {/* Main layout */}
       <div className="flex-1 flex flex-col">
         <MeetingToolbar
-          isMuted={true}
-          isVideoOff={true}
-          onToggleMute={() => {}}
-          onToggleVideo={() => {}}
+          isMuted={!clientMicOn}
+          isVideoOff={!clientCameraOn}
+          onToggleMute={() => {
+            const stream = localStreamRef.current
+            if (!stream) return
+            const audioTracks = stream.getAudioTracks()
+            if (audioTracks.length === 0) {
+              console.warn('[TOGGLE] No audio track available')
+              return
+            }
+            const newState = !clientMicOn
+            audioTracks.forEach(t => { t.enabled = newState })
+            setClientMicOn(newState)
+            console.log(`[TOGGLE] Mic ${newState ? 'ON' : 'OFF'}`)
+          }}
+          onToggleVideo={() => {
+            const stream = localStreamRef.current
+            if (!stream) return
+            const videoTracks = stream.getVideoTracks()
+            if (videoTracks.length === 0) {
+              console.warn('[TOGGLE] No video track available')
+              return
+            }
+            const newState = !clientCameraOn
+            videoTracks.forEach(t => { t.enabled = newState })
+            setClientCameraOn(newState)
+            console.log(`[TOGGLE] Camera ${newState ? 'ON' : 'OFF'}`)
+          }}
           onToggleChat={() => { setShowChat(!showChat); setShowParticipants(false) }}
           onToggleParticipants={() => { setShowParticipants(!showParticipants); setShowChat(false) }}
           participantCount={totalTiles}
