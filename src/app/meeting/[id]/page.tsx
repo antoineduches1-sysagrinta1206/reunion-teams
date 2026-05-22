@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import MeetingToolbar from '../../../components/MeetingToolbar'
 import { Mic, MicOff, MoreHorizontal, X, StopCircle } from 'lucide-react'
+import { io, Socket } from 'socket.io-client'
 
 interface MeetingParticipant {
   id: string
@@ -80,13 +81,18 @@ function MeetingRoomInner() {
   const playStartRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Jitsi Meet state — live audio/video between admin and client
-  const [jitsiReady, setJitsiReady] = useState(false)
+  // WebRTC + Socket.IO state
   const [peerInMeeting, setPeerInMeeting] = useState(false)
+  const [remoteConnected, setRemoteConnected] = useState(false)
   const [remoteName, setRemoteName] = useState('')
-  const jitsiContainerRef = useRef<HTMLDivElement>(null)
-  const jitsiApiRef = useRef<any>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
+  const remoteVideoRef = useRef<HTMLVideoElement>(null)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const socketRef = useRef<Socket | null>(null)
+  const remoteSocketIdRef = useRef<string | null>(null)
+  const iceCandidateQueueRef = useRef<RTCIceCandidateInit[]>([])
+  const makingOfferRef = useRef(false)
+  const remoteStreamRef = useRef<MediaStream | null>(null)
 
   // Fetch meeting data — if template, show lobby to enter name then clone
   useEffect(() => {
@@ -277,104 +283,306 @@ function MeetingRoomInner() {
   }, [joined])
 
   // ============================================================
-  // Jitsi Meet: Live audio/video between admin and client
-  // Uses Jitsi's own TURN/relay servers — works everywhere
+  // WebRTC + Socket.IO: Real-time 1-to-1 video call
   // ============================================================
-  const setupJitsi = useCallback(() => {
-    if (!jitsiContainerRef.current) return
-    if (jitsiApiRef.current) return // Already initialized
+  const createPeerConnection = useCallback((remoteSocketId: string) => {
+    console.log(`[WEBRTC] Creating peer connection for remote: ${remoteSocketId}`)
 
-    const role = isAdmin ? 'admin' : 'client'
-    const myName = isAdmin ? 'Admin' : (meetingData?.clientName || 'Client')
-    const roomName = `zoom-ia-${meetingId}`.replace(/[^a-zA-Z0-9-]/g, '')
-    console.log(`[JITSI] Setting up as ${role} in room ${roomName}`)
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+      ],
+    })
 
-    // Load Jitsi external API script
-    const script = document.createElement('script')
-    script.src = 'https://meet.jit.si/external_api.js'
-    script.async = true
-    script.onload = () => {
-      if (!jitsiContainerRef.current) return
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const JitsiMeetExternalAPI = (window as any).JitsiMeetExternalAPI
-      if (!JitsiMeetExternalAPI) {
-        console.error('[JITSI] JitsiMeetExternalAPI not found')
-        return
+    // Add local tracks BEFORE creating offer
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        console.log(`[WEBRTC] Adding local track: ${track.kind} (${track.id})`)
+        pc.addTrack(track, localStreamRef.current!)
+      })
+    } else {
+      console.warn('[WEBRTC] No local stream — adding recvonly transceivers')
+      pc.addTransceiver('audio', { direction: 'recvonly' })
+      pc.addTransceiver('video', { direction: 'recvonly' })
+    }
+
+    // Handle remote tracks
+    pc.ontrack = (event) => {
+      console.log(`[WEBRTC] ✅ Remote track received: ${event.track.kind}, readyState=${event.track.readyState}`)
+      if (!remoteStreamRef.current) {
+        remoteStreamRef.current = new MediaStream()
+      }
+      remoteStreamRef.current.addTrack(event.track)
+
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current
+        remoteVideoRef.current.play().catch(e => console.warn('[WEBRTC] Remote video play error:', e))
+      }
+      setRemoteConnected(true)
+      console.log(`[WEBRTC] Remote stream now has ${remoteStreamRef.current.getTracks().length} tracks`)
+    }
+
+    // ICE candidates — send to remote via Socket.IO
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log(`[WEBRTC] Sending ICE candidate to ${remoteSocketId}: ${event.candidate.candidate.substring(0, 50)}...`)
+        socketRef.current?.emit('ice-candidate', {
+          to: remoteSocketId,
+          candidate: event.candidate.toJSON(),
+        })
+      } else {
+        console.log('[WEBRTC] ICE gathering complete')
+      }
+    }
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WEBRTC] ICE state: ${pc.iceConnectionState}`)
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setRemoteConnected(true)
+      } else if (pc.iceConnectionState === 'failed') {
+        console.error('[WEBRTC] ICE connection FAILED — attempting restart')
+        pc.restartIce()
+      }
+    }
+
+    pc.onconnectionstatechange = () => {
+      console.log(`[WEBRTC] Connection state: ${pc.connectionState}`)
+      if (pc.connectionState === 'connected') {
+        setRemoteConnected(true)
+      } else if (pc.connectionState === 'failed') {
+        setRemoteConnected(false)
+      }
+    }
+
+    pc.onsignalingstatechange = () => {
+      console.log(`[WEBRTC] Signaling state: ${pc.signalingState}`)
+    }
+
+    peerConnectionRef.current = pc
+    return pc
+  }, [])
+
+  // Process queued ICE candidates after remoteDescription is set
+  const processIceCandidateQueue = useCallback(async () => {
+    const pc = peerConnectionRef.current
+    if (!pc || !pc.remoteDescription) return
+
+    console.log(`[WEBRTC] Processing ${iceCandidateQueueRef.current.length} queued ICE candidates`)
+    while (iceCandidateQueueRef.current.length > 0) {
+      const candidate = iceCandidateQueueRef.current.shift()!
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate))
+        console.log('[WEBRTC] Queued ICE candidate added successfully')
+      } catch (err) {
+        console.error('[WEBRTC] Error adding queued ICE candidate:', err)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!joined || !meetingId) return
+
+    const userName = isAdmin ? 'Admin' : (meetingData?.clientName || displayName || 'Client')
+    console.log(`[SOCKET] Connecting as "${userName}" to room ${meetingId}`)
+
+    // Get local media first
+    const initMedia = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        localStreamRef.current = stream
+        if (clientVideoRef.current) {
+          clientVideoRef.current.srcObject = stream
+          clientVideoRef.current.play().catch(() => {})
+        }
+        setClientCameraOn(true)
+        console.log(`[WEBRTC] Local media acquired: ${stream.getTracks().map(t => t.kind).join(', ')}`)
+      } catch (err) {
+        console.warn('[WEBRTC] Camera/mic denied, trying video only:', err)
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+          localStreamRef.current = stream
+          if (clientVideoRef.current) {
+            clientVideoRef.current.srcObject = stream
+            clientVideoRef.current.play().catch(() => {})
+          }
+          setClientCameraOn(true)
+        } catch {
+          console.warn('[WEBRTC] No media at all — receive only mode')
+        }
       }
 
-      const api = new JitsiMeetExternalAPI('meet.jit.si', {
-        roomName,
-        parentNode: jitsiContainerRef.current,
-        width: '100%',
-        height: '100%',
-        userInfo: { displayName: myName },
-        configOverwrite: {
-          startWithAudioMuted: false,
-          startWithVideoMuted: false,
-          prejoinPageEnabled: false,
-          disableDeepLinking: true,
-          disableInviteFunctions: true,
-          enableWelcomePage: false,
-          enableClosePage: false,
-          disableThirdPartyRequests: true,
-          p2p: { enabled: true },
-        },
-        interfaceConfigOverwrite: {
-          SHOW_JITSI_WATERMARK: false,
-          SHOW_WATERMARK_FOR_GUESTS: false,
-          SHOW_BRAND_WATERMARK: false,
-          SHOW_CHROME_EXTENSION_BANNER: false,
-          TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup'],
-          DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
-          HIDE_INVITE_MORE_HEADER: true,
-          MOBILE_APP_PROMO: false,
-          FILM_STRIP_MAX_HEIGHT: 0,
-          TOOLBAR_ALWAYS_VISIBLE: false,
-        },
+      // Connect Socket.IO AFTER media is ready
+      const socket = io(window.location.origin, { path: '/socket.io' })
+      socketRef.current = socket
+
+      socket.on('connect', () => {
+        console.log(`[SOCKET] ✅ Connected: ${socket.id}`)
+        socket.emit('join-room', { roomId: meetingId, userName })
       })
 
-      jitsiApiRef.current = api
-      setJitsiReady(true)
-      setPeerInMeeting(true)
-      console.log('[JITSI] Room created — waiting for participants')
+      // When existing users are already in the room (I'm the new one → I create the offer)
+      socket.on('existing-users', async (users: { socketId: string; userName: string }[]) => {
+        console.log(`[SOCKET] Existing users in room: ${users.length}`, users)
+        if (users.length > 0) {
+          const remote = users[0]
+          remoteSocketIdRef.current = remote.socketId
+          setRemoteName(remote.userName)
+          setPeerInMeeting(true)
 
-      api.addEventListener('participantJoined', (p: any) => {
-        console.log(`[JITSI] Participant joined: ${p.displayName || p.id}`)
+          // I'm User B — create peer connection and send offer
+          const pc = createPeerConnection(remote.socketId)
+          makingOfferRef.current = true
+          try {
+            const offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+            console.log(`[WEBRTC] 📤 Sending offer to ${remote.socketId} (${offer.sdp?.length} bytes)`)
+            socket.emit('offer', { to: remote.socketId, offer: pc.localDescription })
+          } catch (err) {
+            console.error('[WEBRTC] Error creating offer:', err)
+          } finally {
+            makingOfferRef.current = false
+          }
+        }
+      })
+
+      // When a new user joins (I'm already here → they will send offer, or I create one)
+      socket.on('user-joined', async ({ socketId, userName: remoteUserName }: { socketId: string; userName: string }) => {
+        console.log(`[SOCKET] 🆕 User joined: ${remoteUserName} (${socketId})`)
+        remoteSocketIdRef.current = socketId
+        setRemoteName(remoteUserName)
         setPeerInMeeting(true)
-        setRemoteName(p.displayName || (isAdmin ? 'Client' : 'Admin'))
+
+        // I'm User A — create peer connection and send offer
+        const pc = createPeerConnection(socketId)
+        makingOfferRef.current = true
+        try {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          console.log(`[WEBRTC] 📤 Sending offer to ${socketId} (${offer.sdp?.length} bytes)`)
+          socket.emit('offer', { to: socketId, offer: pc.localDescription })
+        } catch (err) {
+          console.error('[WEBRTC] Error creating offer:', err)
+        } finally {
+          makingOfferRef.current = false
+        }
       })
 
-      api.addEventListener('participantLeft', () => {
-        console.log('[JITSI] Participant left')
+      // Receive offer → create answer
+      socket.on('offer', async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
+        console.log(`[WEBRTC] 📥 Received offer from ${from} (${offer.sdp?.length} bytes)`)
+        remoteSocketIdRef.current = from
+        setPeerInMeeting(true)
+
+        // If we already have a PC, close it and create fresh
+        if (peerConnectionRef.current) {
+          peerConnectionRef.current.close()
+          peerConnectionRef.current = null
+        }
+        iceCandidateQueueRef.current = []
+
+        const pc = createPeerConnection(from)
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(offer))
+          console.log(`[WEBRTC] ✅ Remote description set (offer)`)
+
+          // Process any ICE candidates that arrived before remoteDescription
+          await processIceCandidateQueue()
+
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          console.log(`[WEBRTC] 📤 Sending answer to ${from} (${answer.sdp?.length} bytes)`)
+          socket.emit('answer', { to: from, answer: pc.localDescription })
+        } catch (err) {
+          console.error('[WEBRTC] Error handling offer:', err)
+        }
       })
 
-      api.addEventListener('videoConferenceLeft', () => {
-        console.log('[JITSI] Conference left')
+      // Receive answer
+      socket.on('answer', async ({ from, answer }: { from: string; answer: RTCSessionDescriptionInit }) => {
+        console.log(`[WEBRTC] 📥 Received answer from ${from} (${answer.sdp?.length} bytes)`)
+        const pc = peerConnectionRef.current
+        if (!pc) {
+          console.error('[WEBRTC] No peer connection when answer received!')
+          return
+        }
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer))
+          console.log(`[WEBRTC] ✅ Remote description set (answer)`)
+
+          // Process any ICE candidates that arrived before remoteDescription
+          await processIceCandidateQueue()
+        } catch (err) {
+          console.error('[WEBRTC] Error setting remote description (answer):', err)
+        }
+      })
+
+      // Receive ICE candidate
+      socket.on('ice-candidate', async ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
+        const pc = peerConnectionRef.current
+        if (!pc) {
+          console.log('[WEBRTC] ICE candidate received but no PC — queueing')
+          iceCandidateQueueRef.current.push(candidate)
+          return
+        }
+
+        if (!pc.remoteDescription) {
+          console.log('[WEBRTC] ICE candidate received but no remoteDescription — queueing')
+          iceCandidateQueueRef.current.push(candidate)
+          return
+        }
+
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate))
+          console.log(`[WEBRTC] ✅ ICE candidate added from ${from}`)
+        } catch (err) {
+          console.error('[WEBRTC] Error adding ICE candidate:', err)
+        }
+      })
+
+      // User left
+      socket.on('user-left', ({ socketId }: { socketId: string }) => {
+        console.log(`[SOCKET] User left: ${socketId}`)
+        if (peerConnectionRef.current) {
+          peerConnectionRef.current.close()
+          peerConnectionRef.current = null
+        }
+        remoteStreamRef.current = null
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null
+        setRemoteConnected(false)
+        setPeerInMeeting(false)
+        remoteSocketIdRef.current = null
+      })
+
+      socket.on('disconnect', () => {
+        console.log('[SOCKET] Disconnected')
       })
     }
-    document.head.appendChild(script)
-  }, [meetingId, isAdmin, meetingData?.clientName])
 
-  // Start Jitsi after joining — separate effect to ensure container is in DOM
-  useEffect(() => {
-    if (!joined) return
-    setPeerInMeeting(true)
-  }, [joined])
+    initMedia()
 
-  useEffect(() => {
-    if (!joined || !peerInMeeting) return
-    // Small delay to ensure the container div is rendered in the DOM
-    const timer = setTimeout(() => {
-      setupJitsi()
-    }, 200)
+    // Cleanup
     return () => {
-      clearTimeout(timer)
-      if (jitsiApiRef.current) {
-        jitsiApiRef.current.dispose()
-        jitsiApiRef.current = null
+      console.log('[WEBRTC] Cleanup — closing all connections')
+      if (socketRef.current) {
+        socketRef.current.disconnect()
+        socketRef.current = null
       }
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close()
+        peerConnectionRef.current = null
+      }
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop())
+        localStreamRef.current = null
+      }
+      remoteStreamRef.current = null
+      iceCandidateQueueRef.current = []
     }
-  }, [joined, peerInMeeting, setupJitsi])
+  }, [joined, meetingId, isAdmin, meetingData?.clientName, displayName, createPeerConnection, processIceCandidateQueue])
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
@@ -1018,9 +1226,13 @@ function MeetingRoomInner() {
                   const vid = videoRefs.current[p.id]
                   if (vid) { vid.volume = 0; vid.pause() }
                 })
-                if (jitsiApiRef.current) {
-                  jitsiApiRef.current.dispose()
-                  jitsiApiRef.current = null
+                if (peerConnectionRef.current) {
+                  peerConnectionRef.current.close()
+                  peerConnectionRef.current = null
+                }
+                if (socketRef.current) {
+                  socketRef.current.disconnect()
+                  socketRef.current = null
                 }
                 if (localStreamRef.current) {
                   localStreamRef.current.getTracks().forEach(t => t.stop())
@@ -1218,13 +1430,40 @@ function MeetingRoomInner() {
                 </div>
               </div>
 
-              {/* Jitsi Meet tile — live video call between admin and client */}
-              {joined && (
+              {/* Remote peer tile — WebRTC video call */}
+              {peerInMeeting && (
                 <div
-                  ref={jitsiContainerRef}
                   className="relative rounded-lg overflow-hidden ring-2 ring-[#5b5fc7]"
-                  style={{ backgroundColor: '#1a1a2e', minHeight: '200px' }}
-                />
+                  style={{ backgroundColor: '#2d2d2d' }}
+                >
+                  {/* Remote video */}
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ transform: 'scaleX(-1)', display: remoteConnected ? 'block' : 'none' }}
+                  />
+                  {/* Avatar placeholder when no video yet */}
+                  {!remoteConnected && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]">
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-2xl font-bold">
+                        {(remoteName || (isAdmin ? 'C' : 'A'))[0].toUpperCase()}
+                      </div>
+                    </div>
+                  )}
+                  <div className="absolute bottom-0 left-0 right-0 z-20">
+                    <div className="flex items-center gap-1.5 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
+                      {remoteConnected ? <Mic className="w-3 h-3 text-white" /> : <MicOff className="w-3 h-3 text-red-400" />}
+                      <span className="text-[13px] text-white font-medium drop-shadow-sm">
+                        {remoteName || (isAdmin ? 'Client' : 'Admin')}
+                      </span>
+                      {!remoteConnected && (
+                        <span className="text-[10px] text-gray-400 ml-1">connexion...</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
