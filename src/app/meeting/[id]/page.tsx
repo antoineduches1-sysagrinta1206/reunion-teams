@@ -286,17 +286,22 @@ function MeetingRoomInner() {
   // ============================================================
   // WebRTC + Socket.IO: Real-time 1-to-1 video call
   // ============================================================
+  const iceServersRef = useRef<RTCIceServer[]>([
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
+    { urls: 'turn:a.relay.metered.ca:80?transport=tcp', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
+    { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
+    { urls: 'turns:a.relay.metered.ca:443?transport=tcp', username: 'e8dd65e92f3b1ee3e306bd42', credential: 'kHulem6bYPSfgFhJ' },
+  ])
+
   const createPeerConnection = useCallback((remoteSocketId: string) => {
     console.log(`[WEBRTC] Creating peer connection for remote: ${remoteSocketId}`)
+    console.log(`[WEBRTC] Using ${iceServersRef.current.length} ICE servers`)
 
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-      ],
+      iceServers: iceServersRef.current,
+      iceCandidatePoolSize: 10,
     })
 
     // Add local tracks BEFORE creating offer
@@ -390,8 +395,22 @@ function MeetingRoomInner() {
     const userName = isAdmin ? 'Admin' : (meetingData?.clientName || displayName || 'Client')
     console.log(`[SOCKET] Connecting as "${userName}" to room ${meetingId}`)
 
-    // Get local media — acquire tracks but start with them DISABLED (camera/mic OFF)
+    // Fetch TURN servers for NAT traversal, then get local media
     const initMedia = async () => {
+      // Fetch TURN credentials first
+      try {
+        const turnRes = await fetch('/api/turn-credentials')
+        const turnData = await turnRes.json()
+        if (turnData.iceServers && turnData.iceServers.length > 0) {
+          iceServersRef.current = turnData.iceServers
+          console.log(`[WEBRTC] ✅ Got ${turnData.iceServers.length} ICE servers (including TURN)`)
+        } else {
+          console.warn('[WEBRTC] No TURN servers available — STUN only')
+        }
+      } catch (err) {
+        console.warn('[WEBRTC] Failed to fetch TURN credentials:', err)
+      }
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
         // Disable tracks immediately — user starts with camera/mic OFF
