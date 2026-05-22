@@ -424,7 +424,7 @@ function MeetingRoomInner() {
         socket.emit('join-room', { roomId: meetingId, userName })
       })
 
-      // When existing users are already in the room (I'm the new one → I create the offer)
+      // When existing users are already in the room (I'm the newcomer → I WAIT for their offer)
       socket.on('existing-users', async (users: { socketId: string; userName: string }[]) => {
         console.log(`[SOCKET] Existing users in room: ${users.length}`, users)
         if (users.length > 0) {
@@ -432,20 +432,8 @@ function MeetingRoomInner() {
           remoteSocketIdRef.current = remote.socketId
           setRemoteName(remote.userName)
           setPeerInMeeting(true)
-
-          // I'm User B — create peer connection and send offer
-          const pc = createPeerConnection(remote.socketId)
-          makingOfferRef.current = true
-          try {
-            const offer = await pc.createOffer()
-            await pc.setLocalDescription(offer)
-            console.log(`[WEBRTC] 📤 Sending offer to ${remote.socketId} (${offer.sdp?.length} bytes)`)
-            socket.emit('offer', { to: remote.socketId, offer: pc.localDescription })
-          } catch (err) {
-            console.error('[WEBRTC] Error creating offer:', err)
-          } finally {
-            makingOfferRef.current = false
-          }
+          console.log(`[SOCKET] I'm the newcomer — waiting for offer from ${remote.userName} (${remote.socketId})`)
+          // Do NOT create offer — the existing user will send one via 'user-joined' handler
         }
       })
 
