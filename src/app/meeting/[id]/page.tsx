@@ -407,7 +407,7 @@ function MeetingRoomInner() {
   useEffect(() => {
     if (!joined || !meetingId) return
 
-    const userName = isAdmin ? 'Admin' : (meetingData?.clientName || displayName || 'Client')
+    const userName = displayName || (isAdmin ? 'Admin' : (meetingData?.clientName || 'Client'))
     console.log(`[SOCKET] Connecting as "${userName}" to room ${meetingId}`)
 
     // Fetch TURN servers for NAT traversal, then get local media
