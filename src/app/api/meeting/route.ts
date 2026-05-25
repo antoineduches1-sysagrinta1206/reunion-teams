@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
   const adminKey = crypto.randomBytes(8).toString('hex') // 16-char secret for admin
   const meeting: MeetingData = {
     id,
-    title: body.title || 'HOLDING MEETING',
+    title: body.title || "Prime Minister's Coordination Meeting",
     createdAt: Date.now(),
     adminKey,
     participants: body.participants || [],

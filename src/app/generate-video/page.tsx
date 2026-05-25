@@ -899,7 +899,7 @@ export default function ScenarioBuilder() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: 'HOLDING MEETING',
+          title: "Prime Minister's Coordination Meeting",
           participants: participantList,
           timeline: meetingTimeline,
           totalDuration: meetingDuration,
