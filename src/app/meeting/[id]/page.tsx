@@ -77,6 +77,7 @@ function MeetingRoomInner() {
   const [showTelecommande, setShowTelecommande] = useState(false) // show/hide panel
   const manualModeRef = useRef(false)
   const activeSegIndexRef = useRef<number | null>(null)
+  const playSegmentRef = useRef<(idx: number) => void>(() => {})
 
   // Preload: download videos fully into memory (blob URLs) before playback
   const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
@@ -474,6 +475,27 @@ function MeetingRoomInner() {
         socket.emit('join-room', { roomId: meetingId, userName })
       })
 
+      // Télécommande: listen for admin play-segment / pause commands
+      socket.on('play-segment', ({ segmentIndex }: { segmentIndex: number }) => {
+        console.log(`[TELECOMMANDE] Received play-segment: ${segmentIndex}`)
+        if (!manualModeRef.current) {
+          manualModeRef.current = true
+          setManualMode(true)
+        }
+        playSegmentRef.current(segmentIndex)
+      })
+      socket.on('pause-playback', () => {
+        console.log(`[TELECOMMANDE] Received pause`)
+        if (meetingData) {
+          meetingData.participants.forEach(p => {
+            const vid = videoRefs.current[p.id]
+            if (vid) vid.volume = 0
+          })
+        }
+        setSpeakingId(null)
+        setSegmentFinished(true)
+      })
+
       // When existing users are already in the room (I'm the newcomer → I WAIT for their offer)
       socket.on('existing-users', async (users: { socketId: string; userName: string }[]) => {
         console.log(`[SOCKET] Existing users in room: ${users.length}`, users)
@@ -670,39 +692,8 @@ function MeetingRoomInner() {
     setMeetingEnded(false)
   }, [meetingData])
 
-  // Listen for Socket.IO télécommande events (ALL users — admin + client)
-  useEffect(() => {
-    const socket = socketRef.current
-    if (!socket) return
-
-    const handlePlaySeg = ({ segmentIndex }: { segmentIndex: number }) => {
-      console.log(`[TELECOMMANDE] Received play-segment: ${segmentIndex}`)
-      // Auto-activate manual mode if not already
-      if (!manualModeRef.current) {
-        manualModeRef.current = true
-        setManualMode(true)
-      }
-      playSegment(segmentIndex)
-    }
-    const handlePause = () => {
-      console.log(`[TELECOMMANDE] Received pause`)
-      if (meetingData) {
-        meetingData.participants.forEach(p => {
-          const vid = videoRefs.current[p.id]
-          if (vid) vid.volume = 0
-        })
-      }
-      setSpeakingId(null)
-      setSegmentFinished(true)
-    }
-
-    socket.on('play-segment', handlePlaySeg)
-    socket.on('pause-playback', handlePause)
-    return () => {
-      socket.off('play-segment', handlePlaySeg)
-      socket.off('pause-playback', handlePause)
-    }
-  }, [joined, playSegment, meetingData])
+  // Keep ref in sync so Socket.IO closure always calls the latest version
+  playSegmentRef.current = playSegment
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
