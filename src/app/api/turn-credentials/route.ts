@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic'
 // Requires METERED_API_KEY environment variable
 export async function GET() {
   // The API Key (from credential creation), NOT the Secret Key
-  const apiKey = process.env.METERED_API_KEY || '43f0af0aba42d427488929d43f32e85d714a'
+  // Hardcoded because env var may contain the Secret Key which doesn't work for TURN
+  const apiKey = '43f0af0aba42d427488929d43f32e85d714a'
   
   console.log(`[TURN] METERED_API_KEY ${apiKey ? `set (${apiKey.substring(0, 6)}...)` : 'NOT SET'}`)
   
