@@ -670,18 +670,22 @@ function MeetingRoomInner() {
     setMeetingEnded(false)
   }, [meetingData])
 
-  // Listen for Socket.IO télécommande events (client side)
+  // Listen for Socket.IO télécommande events (ALL users — admin + client)
   useEffect(() => {
     const socket = socketRef.current
-    if (!socket || !manualMode) return
+    if (!socket) return
 
     const handlePlaySeg = ({ segmentIndex }: { segmentIndex: number }) => {
       console.log(`[TELECOMMANDE] Received play-segment: ${segmentIndex}`)
+      // Auto-activate manual mode if not already
+      if (!manualModeRef.current) {
+        manualModeRef.current = true
+        setManualMode(true)
+      }
       playSegment(segmentIndex)
     }
     const handlePause = () => {
       console.log(`[TELECOMMANDE] Received pause`)
-      // Mute all speakers
       if (meetingData) {
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
@@ -698,7 +702,7 @@ function MeetingRoomInner() {
       socket.off('play-segment', handlePlaySeg)
       socket.off('pause-playback', handlePause)
     }
-  }, [manualMode, playSegment, meetingData])
+  }, [playSegment, meetingData])
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
@@ -777,16 +781,16 @@ function MeetingRoomInner() {
         return
       }
 
-      // ===== AUTO→MANUAL after Bloc 1 (admin only) =====
+      // ===== AUTO→MANUAL after Bloc 1 (ALL users) =====
       // When first segment finishes, auto-switch to manual mode so admin controls the rest
-      if (isAdmin && !manualModeRef.current && meetingData.timeline.length > 1) {
+      if (!manualModeRef.current && meetingData.timeline.length > 1) {
         const firstSeg = meetingData.timeline[0]
         if (now > firstSeg.endTime + 0.5) {
           // Bloc 1 just finished — switch to manual mode
           console.log(`[TELECOMMANDE] Bloc 1 finished at t=${now.toFixed(1)}s — switching to manual mode`)
           manualModeRef.current = true
           setManualMode(true)
-          setShowTelecommande(true)
+          if (isAdmin) setShowTelecommande(true)
           // Mute all
           meetingData.participants.forEach(p => {
             const vid = videoRefs.current[p.id]
@@ -1584,7 +1588,7 @@ function MeetingRoomInner() {
                               // Listeners: always visible. Speakers: visible when NOT their turn, hidden when speaking
                               opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
                               zIndex: 2,
-                              transition: 'opacity 0.5s ease-in-out',
+                              transition: 'opacity 1.5s ease-in-out',
                               pointerEvents: 'none',
                             }}
                           />
