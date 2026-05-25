@@ -628,20 +628,40 @@ function MeetingRoomInner() {
     const seg = meetingData.timeline[segIndex]
     if (!seg) return
 
-    console.log(`[TELECOMMANDE] Playing segment ${segIndex}: ${seg.participantId} (${seg.startTime}s - ${seg.endTime}s)`)
+    const speaker = seg.participantId
+    console.log(`[TELECOMMANDE] Playing segment ${segIndex}: ${speaker} (${seg.startTime}s - ${seg.endTime}s)`)
 
     // Offset playStartRef so the ticker thinks we're at seg.startTime
     playStartRef.current = Date.now() - (seg.startTime * 1000)
 
-    // Seek all speaker videos to the correct position
+    // Mute ALL participants first, then unmute + seek only the active speaker
     meetingData.participants.forEach(p => {
+      const vid = videoRefs.current[p.id]
+      if (vid) vid.volume = 0
+    })
+
+    // Seek + unmute + force-play the active speaker
+    const speakerVid = videoRefs.current[speaker]
+    if (speakerVid) {
+      if (speakerVid.duration > 0) {
+        speakerVid.currentTime = seg.startTime <= speakerVid.duration ? seg.startTime : seg.startTime % speakerVid.duration
+      }
+      speakerVid.muted = false
+      speakerVid.volume = 1
+      if (speakerVid.paused) speakerVid.play().catch(() => {})
+      console.log(`[TELECOMMANDE] Speaker ${speaker}: seeked to ${seg.startTime}s, vol=1, playing=${!speakerVid.paused}`)
+    }
+
+    // Also ensure all other speaker videos are playing (at volume 0) so they can be seeked later
+    meetingData.participants.forEach(p => {
+      if (p.id === speaker) return
       if ((p.role || 'speaker') !== 'speaker') return
       const vid = videoRefs.current[p.id]
-      if (vid && vid.duration > 0) {
-        vid.currentTime = seg.startTime <= vid.duration ? seg.startTime : seg.startTime % vid.duration
-        if (vid.paused) vid.play().catch(() => {})
-      }
+      if (vid && vid.paused) vid.play().catch(() => {})
     })
+
+    // Immediately update speaking state (drives idle video opacity crossfade)
+    setSpeakingId(speaker)
 
     activeSegIndexRef.current = segIndex
     setActiveSegIndex(segIndex)
@@ -725,38 +745,33 @@ function MeetingRoomInner() {
           return
         }
 
-        // Segment is playing — use the same speaker logic as auto mode
+        // Segment is playing — ALWAYS enforce the active speaker has vol=1 and is playing
         const currentSpeaker = seg.participantId
-        if (currentSpeaker !== lastSpeaker) {
-          if (lastSpeaker) {
-            const oldVid = videoRefs.current[lastSpeaker]
-            if (oldVid) oldVid.volume = 0
-          }
-          const vid = videoRefs.current[currentSpeaker]
-          if (vid) {
+
+        // Ensure ONLY the active speaker has volume
+        meetingData.participants.forEach(p => {
+          const vid = videoRefs.current[p.id]
+          if (!vid) return
+          if (p.id === currentSpeaker) {
             if (vid.muted) vid.muted = false
-            if (vid.duration > 0) {
-              const expected = now <= vid.duration ? now : now % vid.duration
-              if (Math.abs(vid.currentTime - expected) > 0.08) vid.currentTime = expected
-            }
+            if (vid.volume < 1) vid.volume = 1
             if (vid.paused && vid.readyState >= 2) vid.play().catch(() => {})
-            vid.volume = 1
+          } else {
+            if (vid.volume > 0) vid.volume = 0
           }
-          setSpeakingId(currentSpeaker)
-          lastSpeaker = currentSpeaker
-        }
+        })
+
+        // Always keep speakingId in sync
+        setSpeakingId(currentSpeaker)
+        lastSpeaker = currentSpeaker
 
         // Drift correction every ~2s
         syncCounter++
         if (syncCounter % 10 === 0) {
           const vid = videoRefs.current[currentSpeaker]
-          if (vid) {
-            if (vid.muted) vid.muted = false
-            if (vid.volume < 1) vid.volume = 1
-            if (vid.duration > 0 && !vid.paused) {
-              const expected = now <= vid.duration ? now : now % vid.duration
-              if (Math.abs(vid.currentTime - expected) > 0.12) vid.currentTime = expected
-            }
+          if (vid && vid.duration > 0 && !vid.paused) {
+            const expected = now <= vid.duration ? now : now % vid.duration
+            if (Math.abs(vid.currentTime - expected) > 0.12) vid.currentTime = expected
           }
         }
         return
