@@ -702,7 +702,7 @@ function MeetingRoomInner() {
       socket.off('play-segment', handlePlaySeg)
       socket.off('pause-playback', handlePause)
     }
-  }, [playSegment, meetingData])
+  }, [joined, playSegment, meetingData])
 
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
@@ -1584,11 +1584,11 @@ function MeetingRoomInner() {
                             crossOrigin="anonymous"
                             className="absolute inset-0 w-full h-full object-cover"
                             style={{
-                              // Show idle when NOT speaking (hides lip-sync artifacts + provides smooth listening pose)
-                              // Listeners: always visible. Speakers: visible when NOT their turn, hidden when speaking
-                              opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
+                              // In manual mode: hide idle entirely (avoid jarring visual switch between 2 videos)
+                              // In auto mode: show idle when NOT speaking, hide when speaking
+                              opacity: manualMode ? 0 : (!isSpeakerRole ? 1 : (isSpeaking ? 0 : 1)),
                               zIndex: 2,
-                              transition: 'opacity 1.5s ease-in-out',
+                              transition: 'opacity 0.4s ease-in-out',
                               pointerEvents: 'none',
                             }}
                           />
