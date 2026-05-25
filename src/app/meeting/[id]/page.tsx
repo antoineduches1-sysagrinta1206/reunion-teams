@@ -416,15 +416,21 @@ function MeetingRoomInner() {
       try {
         const turnRes = await fetch('/api/turn-credentials')
         const turnData = await turnRes.json()
+        const hasTurn = turnData.iceServers?.some((s: RTCIceServer) => 
+          (typeof s.urls === 'string' ? s.urls : s.urls?.[0] || '').startsWith('turn')
+        )
         if (turnData.iceServers && turnData.iceServers.length > 0) {
           iceServersRef.current = turnData.iceServers
-          console.log(`[WEBRTC] ✅ Got ${turnData.iceServers.length} ICE servers (including TURN)`)
+          console.log(`[WEBRTC] ✅ Got ${turnData.iceServers.length} ICE servers (TURN included: ${hasTurn})`)
+          if (turnData.error) console.warn(`[WEBRTC] TURN API warning: ${turnData.error}`)
         } else {
-          console.warn('[WEBRTC] No TURN servers available — STUN only')
+          console.warn('[WEBRTC] No TURN servers from API — STUN only')
         }
       } catch (err) {
         console.warn('[WEBRTC] Failed to fetch TURN credentials:', err)
       }
+      // Log final ICE config
+      console.log(`[WEBRTC] Final ICE servers:`, iceServersRef.current.map((s: RTCIceServer) => typeof s.urls === 'string' ? s.urls : s.urls?.[0]))
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })

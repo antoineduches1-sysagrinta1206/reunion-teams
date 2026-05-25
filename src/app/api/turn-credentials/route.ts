@@ -24,8 +24,9 @@ export async function GET() {
     })
   }
 
-  const url = `https://zoom-meeting-ia.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`
-  console.log(`[TURN] Fetching from: ${url.substring(0, 70)}...`)
+  // Try the user's custom domain first, fall back to standard Metered API
+  const url = `https://${process.env.METERED_APP_NAME || 'zoom-meeting-ia'}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`
+  console.log(`[TURN] Fetching from: ${url}`)
 
   try {
     const res = await fetch(url, { cache: 'no-store' })
