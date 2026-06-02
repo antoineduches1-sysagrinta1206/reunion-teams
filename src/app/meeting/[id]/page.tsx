@@ -70,14 +70,6 @@ function MeetingRoomInner() {
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set())
   const [meetingKilled, setMeetingKilled] = useState(false) // admin ended the meeting permanently
 
-  // Télécommande IA: admin controls when each speech block plays
-  const [manualMode, setManualMode] = useState(false) // true = admin controls playback
-  const [activeSegIndex, setActiveSegIndex] = useState<number | null>(null) // currently playing segment
-  const [segmentFinished, setSegmentFinished] = useState(false) // true when current segment ended, waiting for next
-  const [showTelecommande, setShowTelecommande] = useState(false) // show/hide panel
-  const manualModeRef = useRef(false)
-  const activeSegIndexRef = useRef<number | null>(null)
-  const playSegmentRef = useRef<(idx: number) => void>(() => {})
 
   // Preload: download videos fully into memory (blob URLs) before playback
   const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
@@ -475,26 +467,6 @@ function MeetingRoomInner() {
         socket.emit('join-room', { roomId: meetingId, userName })
       })
 
-      // Télécommande: listen for admin play-segment / pause commands
-      socket.on('play-segment', ({ segmentIndex }: { segmentIndex: number }) => {
-        console.log(`[TELECOMMANDE] Received play-segment: ${segmentIndex}`)
-        if (!manualModeRef.current) {
-          manualModeRef.current = true
-          setManualMode(true)
-        }
-        playSegmentRef.current(segmentIndex)
-      })
-      socket.on('pause-playback', () => {
-        console.log(`[TELECOMMANDE] Received pause`)
-        if (meetingData) {
-          meetingData.participants.forEach(p => {
-            const vid = videoRefs.current[p.id]
-            if (vid) vid.volume = 0
-          })
-        }
-        setSpeakingId(null)
-        setSegmentFinished(true)
-      })
 
       // When existing users are already in the room (I'm the newcomer → I WAIT for their offer)
       socket.on('existing-users', async (users: { socketId: string; userName: string }[]) => {
@@ -644,57 +616,6 @@ function MeetingRoomInner() {
     }
   }, [joined, meetingId, isAdmin, meetingData?.clientName, displayName, createPeerConnection, processIceCandidateQueue])
 
-  // Télécommande: play a specific segment (admin triggers, all clients receive via Socket.IO)
-  const playSegment = useCallback((segIndex: number) => {
-    if (!meetingData) return
-    const seg = meetingData.timeline[segIndex]
-    if (!seg) return
-
-    const speaker = seg.participantId
-    console.log(`[TELECOMMANDE] Playing segment ${segIndex}: ${speaker} (${seg.startTime}s - ${seg.endTime}s)`)
-
-    // Offset playStartRef so the ticker thinks we're at seg.startTime
-    playStartRef.current = Date.now() - (seg.startTime * 1000)
-
-    // Mute ALL participants first, then unmute + seek only the active speaker
-    meetingData.participants.forEach(p => {
-      const vid = videoRefs.current[p.id]
-      if (vid) vid.volume = 0
-    })
-
-    // Seek + unmute + force-play the active speaker
-    const speakerVid = videoRefs.current[speaker]
-    if (speakerVid) {
-      if (speakerVid.duration > 0) {
-        speakerVid.currentTime = seg.startTime <= speakerVid.duration ? seg.startTime : seg.startTime % speakerVid.duration
-      }
-      speakerVid.muted = false
-      speakerVid.volume = 1
-      if (speakerVid.paused) speakerVid.play().catch(() => {})
-      console.log(`[TELECOMMANDE] Speaker ${speaker}: seeked to ${seg.startTime}s, vol=1, playing=${!speakerVid.paused}`)
-    }
-
-    // Also ensure all other speaker videos are playing (at volume 0) so they can be seeked later
-    meetingData.participants.forEach(p => {
-      if (p.id === speaker) return
-      if ((p.role || 'speaker') !== 'speaker') return
-      const vid = videoRefs.current[p.id]
-      if (vid && vid.paused) vid.play().catch(() => {})
-    })
-
-    // Immediately update speaking state (drives idle video opacity crossfade)
-    setSpeakingId(speaker)
-
-    activeSegIndexRef.current = segIndex
-    setActiveSegIndex(segIndex)
-    setSegmentFinished(false)
-    meetingEndedRef.current = false
-    setMeetingEnded(false)
-  }, [meetingData])
-
-  // Keep ref in sync so Socket.IO closure always calls the latest version
-  playSegmentRef.current = playSegment
-
   // Timeline ticker — volume switching + drift correction + idle crossfade control
   // - Active speaker gets volume=1, all others volume=0
   // - Periodic drift correction keeps video in sync with timeline
@@ -710,70 +631,7 @@ function MeetingRoomInner() {
       if (playStartRef.current === 0) return
       const now = (Date.now() - playStartRef.current) / 1000
 
-      // Manual mode: only play the active segment, stop at its end
-      if (manualModeRef.current) {
-        const segIdx = activeSegIndexRef.current
-        if (segIdx === null) {
-          // No segment active — mute all
-          meetingData.participants.forEach(p => {
-            const vid = videoRefs.current[p.id]
-            if (vid && vid.volume > 0) vid.volume = 0
-          })
-          setSpeakingId(null)
-          return
-        }
-        const seg = meetingData.timeline[segIdx]
-        if (!seg) return
-
-        // Check if segment finished
-        if (now > seg.endTime) {
-          // Segment done — mute all, wait for admin
-          meetingData.participants.forEach(p => {
-            const vid = videoRefs.current[p.id]
-            if (vid && vid.volume > 0) vid.volume = 0
-          })
-          setSpeakingId(null)
-          activeSegIndexRef.current = null
-          setActiveSegIndex(null)
-          setSegmentFinished(true)
-          console.log(`[TELECOMMANDE] Segment ${segIdx} finished`)
-          return
-        }
-
-        // Segment is playing — ALWAYS enforce the active speaker has vol=1 and is playing
-        const currentSpeaker = seg.participantId
-
-        // Ensure ONLY the active speaker has volume
-        meetingData.participants.forEach(p => {
-          const vid = videoRefs.current[p.id]
-          if (!vid) return
-          if (p.id === currentSpeaker) {
-            if (vid.muted) vid.muted = false
-            if (vid.volume < 1) vid.volume = 1
-            if (vid.paused && vid.readyState >= 2) vid.play().catch(() => {})
-          } else {
-            if (vid.volume > 0) vid.volume = 0
-          }
-        })
-
-        // Always keep speakingId in sync
-        setSpeakingId(currentSpeaker)
-        lastSpeaker = currentSpeaker
-
-        // Drift correction every ~2s
-        syncCounter++
-        if (syncCounter % 10 === 0) {
-          const vid = videoRefs.current[currentSpeaker]
-          if (vid && vid.duration > 0 && !vid.paused) {
-            const expected = now <= vid.duration ? now : now % vid.duration
-            if (Math.abs(vid.currentTime - expected) > 0.12) vid.currentTime = expected
-          }
-        }
-        return
-      }
-
-      // ===== AUTO MODE (original behavior) =====
-      // All segments play automatically. Admin can toggle télécommande manually if needed.
+      // ===== AUTO MODE =====
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
 
@@ -1403,18 +1261,6 @@ function MeetingRoomInner() {
           {isAdmin && !meetingKilled && (
             <button
               onClick={() => {
-                setShowTelecommande(!showTelecommande)
-                setShowChat(false)
-                setShowParticipants(false)
-              }}
-              className={`${manualMode ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-[#3a3a3a] hover:bg-[#4a4a4a]'} text-white text-[10px] sm:text-[11px] font-bold px-2 sm:px-3 py-1 rounded transition-colors`}
-            >
-              Telecommande
-            </button>
-          )}
-          {isAdmin && !meetingKilled && (
-            <button
-              onClick={() => {
                 // Admin ends meeting for everyone
                 setMeetingKilled(true)
                 meetingData.participants.forEach(p => {
@@ -1560,9 +1406,8 @@ function MeetingRoomInner() {
                             crossOrigin="anonymous"
                             className="absolute inset-0 w-full h-full object-cover"
                             style={{
-                              // In manual mode: hide idle entirely (avoid jarring visual switch between 2 videos)
-                              // In auto mode: show idle when NOT speaking, hide when speaking
-                              opacity: manualMode ? 0 : (!isSpeakerRole ? 1 : (isSpeaking ? 0 : 1)),
+                              // Show idle when NOT speaking, hide when speaking
+                              opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
                               zIndex: 2,
                               transition: 'opacity 0.4s ease-in-out',
                               pointerEvents: 'none',
@@ -1732,112 +1577,6 @@ function MeetingRoomInner() {
             </div>
           )}
 
-          {/* Télécommande panel — admin only */}
-          {showTelecommande && isAdmin && meetingData && (
-            <div className="absolute right-0 top-[44px] sm:top-[48px] bottom-0 w-full sm:w-[360px] sm:relative sm:top-0 z-30 bg-[#2d2c2c] border-l border-[#383838] flex flex-col">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-[#383838]">
-                <h3 className="text-[14px] font-semibold text-white">Telecommande IA</h3>
-                <button onClick={() => setShowTelecommande(false)} className="hover:bg-[#3a3a3a] p-1 rounded">
-                  <X className="w-4 h-4 text-gray-400" />
-                </button>
-              </div>
-
-              {/* Mode toggle */}
-              <div className="px-4 py-3 border-b border-[#383838]">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-gray-400">Mode manuel</span>
-                  <button
-                    onClick={() => {
-                      const newMode = !manualMode
-                      setManualMode(newMode)
-                      manualModeRef.current = newMode
-                      if (newMode) {
-                        // Entering manual mode: mute all, wait for admin
-                        meetingData.participants.forEach(p => {
-                          const vid = videoRefs.current[p.id]
-                          if (vid) vid.volume = 0
-                        })
-                        setSpeakingId(null)
-                        setActiveSegIndex(null)
-                        activeSegIndexRef.current = null
-                        setSegmentFinished(true)
-                      } else {
-                        // Back to auto: let the ticker take over from current time
-                        setSegmentFinished(false)
-                      }
-                    }}
-                    className={`w-10 h-5 rounded-full flex items-center transition-colors ${manualMode ? 'bg-indigo-600 justify-end' : 'bg-[#555] justify-start'}`}
-                  >
-                    <div className="w-4 h-4 bg-white rounded-full shadow mx-0.5" />
-                  </button>
-                </div>
-                <p className="text-[10px] text-gray-500 mt-1">
-                  {manualMode ? 'Vous controlez quand chaque bloc est joue' : 'Le scenario se joue automatiquement'}
-                </p>
-              </div>
-
-              {/* Segment list */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {meetingData.timeline.map((seg, idx) => {
-                  const participant = meetingData.participants.find(p => p.id === seg.participantId)
-                  const duration = Math.round(seg.endTime - seg.startTime)
-                  const isActive = activeSegIndex === idx
-                  const isPlayed = activeSegIndex !== null && idx < activeSegIndex
-                  return (
-                    <div
-                      key={idx}
-                      className={`rounded-lg border p-3 transition-all ${
-                        isActive ? 'border-indigo-500 bg-indigo-500/10' :
-                        isPlayed ? 'border-[#444] bg-[#333] opacity-60' :
-                        'border-[#444] bg-[#333] hover:border-[#666]'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0" style={{ background: participant?.color || '#666' }}>
-                          {participant?.name?.charAt(0) || '?'}
-                        </div>
-                        <span className="text-[12px] text-white font-medium truncate">{participant?.name || 'Unknown'}</span>
-                        <span className="text-[10px] text-gray-500 ml-auto">{duration}s</span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-2">
-                        {manualMode && (
-                          <button
-                            onClick={() => {
-                              // Emit via Socket.IO so all clients get it
-                              if (socketRef.current) {
-                                socketRef.current.emit('play-segment', { roomId: meetingId, segmentIndex: idx })
-                              }
-                              // Also play locally immediately
-                              playSegment(idx)
-                            }}
-                            disabled={isActive}
-                            className={`flex-1 text-[11px] font-bold py-1.5 rounded transition-colors ${
-                              isActive
-                                ? 'bg-indigo-600 text-white cursor-default'
-                                : 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white cursor-pointer'
-                            }`}
-                          >
-                            {isActive ? '▶ En cours...' : `▶ Bloc ${idx + 1}`}
-                          </button>
-                        )}
-                        {!manualMode && (
-                          <span className={`text-[10px] ${isActive ? 'text-indigo-400' : 'text-gray-500'}`}>
-                            {Math.floor(seg.startTime / 60)}:{String(Math.floor(seg.startTime % 60)).padStart(2, '0')} - {Math.floor(seg.endTime / 60)}:{String(Math.floor(seg.endTime % 60)).padStart(2, '0')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })}
-
-                {segmentFinished && manualMode && (
-                  <div className="text-center py-3">
-                    <span className="text-[11px] text-indigo-400 font-medium">En attente... Cliquez sur le prochain bloc</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
