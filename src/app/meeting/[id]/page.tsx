@@ -87,6 +87,7 @@ function MeetingRoomInner() {
   const [peerInMeeting, setPeerInMeeting] = useState(false)
   const [remoteConnected, setRemoteConnected] = useState(false)
   const [remoteName, setRemoteName] = useState('')
+  const [remoteCameraOff, setRemoteCameraOff] = useState(false)
   const localStreamRef = useRef<MediaStream | null>(null)
   const remoteVideoRef = useRef<HTMLVideoElement>(null)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
@@ -467,6 +468,11 @@ function MeetingRoomInner() {
         socket.emit('join-room', { roomId: meetingId, userName })
       })
 
+      // Listen for remote peer camera toggle
+      socket.on('camera-toggle', ({ cameraOn }: { cameraOn: boolean }) => {
+        console.log(`[SOCKET] Remote camera ${cameraOn ? 'ON' : 'OFF'}`)
+        setRemoteCameraOff(!cameraOn)
+      })
 
       // When existing users are already in the room (I'm the newcomer → I WAIT for their offer)
       socket.on('existing-users', async (users: { socketId: string; userName: string }[]) => {
@@ -1338,6 +1344,10 @@ function MeetingRoomInner() {
             const newState = !clientCameraOn
             videoTracks.forEach(t => { t.enabled = newState })
             setClientCameraOn(newState)
+            // Notify remote peer about camera state
+            if (socketRef.current) {
+              socketRef.current.emit('camera-toggle', { roomId: meetingId, cameraOn: newState })
+            }
             console.log(`[TOGGLE] Camera ${newState ? 'ON' : 'OFF'}`)
           }}
           onToggleChat={() => { setShowChat(!showChat); setShowParticipants(false) }}
@@ -1502,14 +1512,13 @@ function MeetingRoomInner() {
                     autoPlay
                     playsInline
                     className="absolute inset-0 w-full h-full object-cover"
-                    style={{ transform: 'scaleX(-1)', display: remoteConnected ? 'block' : 'none' }}
+                    style={{ transform: 'scaleX(-1)', display: (remoteConnected && !remoteCameraOff) ? 'block' : 'none' }}
                   />
-                  {/* Avatar placeholder when no video yet */}
-                  {!remoteConnected && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]">
-                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-2xl font-bold">
-                        {(remoteName || (isAdmin ? 'C' : 'A'))[0].toUpperCase()}
-                      </div>
+                  {/* Avatar placeholder when no video or camera off */}
+                  {(!remoteConnected || remoteCameraOff) && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1a1a1a]">
+                      <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                      <span className="text-white text-lg font-semibold">{remoteName || (isAdmin ? 'Client' : 'Admin')}</span>
                     </div>
                   )}
                   <div className="absolute bottom-0 left-0 right-0 z-20">

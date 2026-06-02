@@ -74,16 +74,10 @@ app.prepare().then(() => {
       io.to(to).emit('ice-candidate', { from: socket.id, candidate })
     })
 
-    // Admin télécommande: broadcast play-segment to all in room
-    socket.on('play-segment', ({ roomId, segmentIndex }) => {
-      console.log(`[SOCKET] play-segment from ${socket.id}: room=${roomId}, seg=${segmentIndex}`)
-      io.to(roomId).emit('play-segment', { segmentIndex })
-    })
-
-    // Admin télécommande: broadcast pause to all in room
-    socket.on('pause-playback', ({ roomId }) => {
-      console.log(`[SOCKET] pause-playback from ${socket.id}: room=${roomId}`)
-      io.to(roomId).emit('pause-playback')
+    // Camera toggle: broadcast to others in room
+    socket.on('camera-toggle', ({ roomId, cameraOn }) => {
+      console.log(`[SOCKET] camera-toggle from ${socket.id}: room=${roomId}, camera=${cameraOn}`)
+      socket.to(roomId).emit('camera-toggle', { cameraOn })
     })
 
     // Disconnect
