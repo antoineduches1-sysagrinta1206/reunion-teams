@@ -1091,13 +1091,10 @@ function MeetingRoomInner() {
                   style={{ transform: 'scaleX(-1)', display: clientCameraOn ? 'block' : 'none' }}
                 />
                 {!clientCameraOn && (
-                  <>
-                    <svg viewBox="0 0 24 24" className="w-8 h-8 text-white/40 mb-3" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9.75a2.25 2.25 0 002.25-2.25V7.5a2.25 2.25 0 00-2.25-2.25H4.5A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" strokeLinecap="round" strokeLinejoin="round"/>
-                      <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
-                    <p className="text-white/50 text-[13px]">Your camera is turned off</p>
-                  </>
+                  <div className="flex flex-col items-center justify-center">
+                    <img src="/admin-avatar.jpg" alt="Avatar" className="w-16 h-16 rounded-full object-cover border-2 border-[#5b5fc7] mb-2" />
+                    <p className="text-white text-[14px] font-semibold">{displayName}</p>
+                  </div>
                 )}
               </div>
               {/* Camera controls bar */}
@@ -1471,12 +1468,11 @@ function MeetingRoomInner() {
                       className="absolute inset-0 w-full h-full object-cover"
                       style={{ transform: 'scaleX(-1)' }}
                     />
-                    {/* Fallback initials if no webcam */}
+                    {/* Fallback avatar + name if no webcam */}
                     {!clientCameraOn && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold">
-                          {displayName.charAt(0).toUpperCase()}
-                        </div>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1a1a1a]">
+                        <img src="/admin-avatar.jpg" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                        <span className="text-white text-lg font-semibold">{displayName}</span>
                       </div>
                     )}
                   </>
