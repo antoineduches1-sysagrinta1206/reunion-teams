@@ -1092,7 +1092,7 @@ function MeetingRoomInner() {
                 />
                 {!clientCameraOn && (
                   <div className="flex flex-col items-center justify-center">
-                    <img src="/admin-avatar.jpg" alt="Avatar" className="w-16 h-16 rounded-full object-cover border-2 border-[#5b5fc7] mb-2" />
+                    <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-16 h-16 rounded-full object-cover border-2 border-[#5b5fc7] mb-2" />
                     <p className="text-white text-[14px] font-semibold">{displayName}</p>
                   </div>
                 )}
@@ -1471,7 +1471,7 @@ function MeetingRoomInner() {
                     {/* Fallback avatar + name if no webcam */}
                     {!clientCameraOn && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1a1a1a]">
-                        <img src="/admin-avatar.jpg" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                        <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
                         <span className="text-white text-lg font-semibold">{displayName}</span>
                       </div>
                     )}
