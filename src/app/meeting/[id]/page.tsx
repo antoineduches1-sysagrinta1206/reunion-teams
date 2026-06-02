@@ -772,30 +772,8 @@ function MeetingRoomInner() {
         return
       }
 
-      // ===== AUTO→MANUAL after Bloc 1 (ALL users) =====
-      // When first segment finishes, auto-switch to manual mode so admin controls the rest
-      if (!manualModeRef.current && meetingData.timeline.length > 1) {
-        const firstSeg = meetingData.timeline[0]
-        if (now > firstSeg.endTime + 0.5) {
-          // Bloc 1 just finished — switch to manual mode
-          console.log(`[TELECOMMANDE] Bloc 1 finished at t=${now.toFixed(1)}s — switching to manual mode`)
-          manualModeRef.current = true
-          setManualMode(true)
-          if (isAdmin) setShowTelecommande(true)
-          // Mute all
-          meetingData.participants.forEach(p => {
-            const vid = videoRefs.current[p.id]
-            if (vid) vid.volume = 0
-          })
-          setSpeakingId(null)
-          activeSegIndexRef.current = null
-          setActiveSegIndex(null)
-          setSegmentFinished(true)
-          return
-        }
-      }
-
       // ===== AUTO MODE (original behavior) =====
+      // All segments play automatically. Admin can toggle télécommande manually if needed.
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
 
