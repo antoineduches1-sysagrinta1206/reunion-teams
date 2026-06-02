@@ -939,8 +939,8 @@ function MeetingRoomInner() {
         vid.currentTime = startOffset > vid.duration ? startOffset % vid.duration : startOffset
       }
 
-      // Use volume=0 (NOT muted) — muted toggling blocked by browsers without gesture
-      vid.muted = false
+      // Start muted (guaranteed autoplay) — we unmute ALL after they're playing
+      vid.muted = true
       vid.volume = 0
       if (!isSpeakerRole) {
         vid.loop = true
@@ -953,17 +953,6 @@ function MeetingRoomInner() {
       } catch (err: any) {
         console.warn(`[PLAY] ${p.name}: play failed (attempt ${retryCount}): ${err.message}`)
         if (retryCount < 3) {
-          if (err.name === 'NotAllowedError') {
-            vid.muted = true
-            vid.volume = 0
-            try {
-              await vid.play()
-              console.log(`[PLAY] ${p.name}: playing muted (fallback)`)
-              setVideoLoading(prev => ({ ...prev, [p.id]: false }))
-              if (isSpeakerRole) setAudioBlocked(true)
-              return
-            } catch {}
-          }
           await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)))
           return startSingleVideo(p, retryCount + 1)
         }
@@ -977,7 +966,25 @@ function MeetingRoomInner() {
     // Start ALL participants in parallel — same for desktop and mobile
     await Promise.all(meetingData.participants.map(p => startSingleVideo(p)))
 
-    // After all started: force-sync every playing speaker to the wall clock
+    // After all started: UNMUTE all speakers (they're at volume=0 so user hears nothing)
+    // This works because we're still in the user gesture chain from the Join button click
+    let anyBlocked = false
+    meetingData.participants.forEach(p => {
+      if ((p.role || 'speaker') === 'speaker') {
+        const vid = videoRefs.current[p.id]
+        if (vid) {
+          vid.muted = false
+          vid.volume = 0 // keep silent — ticker controls volume
+          if (vid.paused) {
+            vid.play().catch(() => { anyBlocked = true })
+          }
+          console.log(`[PLAY] ${p.name}: unmuted (vol=0, paused=${vid.paused})`)
+        }
+      }
+    })
+    if (anyBlocked) setAudioBlocked(true)
+
+    // Force-sync every playing speaker to the wall clock
     const syncNow = (Date.now() - playStartRef.current) / 1000
     meetingData.participants.forEach(p => {
       if ((p.role || 'speaker') === 'speaker') {
@@ -987,7 +994,7 @@ function MeetingRoomInner() {
         }
       }
     })
-    console.log(`[PLAY] All started + synced at t=${syncNow.toFixed(2)}s`)
+    console.log(`[PLAY] All started + unmuted + synced at t=${syncNow.toFixed(2)}s`)
   }, [meetingData])
 
   // Notify server of join
