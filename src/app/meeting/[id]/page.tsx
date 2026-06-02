@@ -1098,7 +1098,13 @@ function MeetingRoomInner() {
                 />
                 {!clientCameraOn && (
                   <div className="flex flex-col items-center justify-center">
-                    <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-16 h-16 rounded-full object-cover border-2 border-[#5b5fc7] mb-2" />
+                    {isAdmin ? (
+                      <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-16 h-16 rounded-full object-cover border-2 border-[#5b5fc7] mb-2" />
+                    ) : (
+                      <div className="w-16 h-16 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-xl font-bold mb-2">
+                        {displayName.charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     <p className="text-white text-[14px] font-semibold">{displayName}</p>
                   </div>
                 )}
@@ -1481,7 +1487,13 @@ function MeetingRoomInner() {
                     {/* Fallback avatar + name if no webcam */}
                     {!clientCameraOn && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1a1a1a]">
-                        <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                        {isAdmin ? (
+                          <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                        ) : (
+                          <div className="w-20 h-20 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-2xl font-bold mb-3">
+                            {displayName.charAt(0).toUpperCase()}
+                          </div>
+                        )}
                         <span className="text-white text-lg font-semibold">{displayName}</span>
                       </div>
                     )}
@@ -1517,7 +1529,13 @@ function MeetingRoomInner() {
                   {/* Avatar placeholder when no video or camera off */}
                   {(!remoteConnected || remoteCameraOff) && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1a1a1a]">
-                      <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                      {!isAdmin ? (
+                        <img src="/admin-avatar.jpg.png" alt="Avatar" className="w-20 h-20 rounded-full object-cover border-2 border-[#5b5fc7] mb-3" />
+                      ) : (
+                        <div className="w-20 h-20 rounded-full bg-[#5b5fc7] flex items-center justify-center text-white text-2xl font-bold mb-3">
+                          {(remoteName || 'C').charAt(0).toUpperCase()}
+                        </div>
+                      )}
                       <span className="text-white text-lg font-semibold">{remoteName || (isAdmin ? 'Client' : 'Admin')}</span>
                     </div>
                   )}
