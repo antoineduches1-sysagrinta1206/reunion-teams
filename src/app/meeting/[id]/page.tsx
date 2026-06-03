@@ -660,10 +660,15 @@ function MeetingRoomInner() {
           setAiPaused(true)
           console.log(`[GATE] AI paused after segment ${gateSegRef.current} (listen mode)`)
         }
-        // Force listen mode: mute everyone, no active speaker → idle pose shows
+        // Force listen mode: mute + PAUSE every speaker video so it freezes at its
+        // current frame (prevents it from running to the end during the listen period),
+        // no active speaker → idle pose shows. Idle videos keep looping.
         meetingData.participants.forEach(p => {
           const vid = videoRefs.current[p.id]
-          if (vid && vid.volume > 0) vid.volume = 0
+          if (vid) {
+            vid.volume = 0
+            if (!vid.paused) vid.pause()
+          }
         })
         if (lastSpeaker) lastSpeaker = null
         setSpeakingId(null)
@@ -806,7 +811,15 @@ function MeetingRoomInner() {
       }
       speakerVid.muted = false
       speakerVid.volume = 1
-      if (speakerVid.paused && speakerVid.readyState >= 2) speakerVid.play().catch(() => {})
+      // Force playback even if the element previously ended/was frozen during listen mode
+      const p = speakerVid.play()
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {
+          // If sound is blocked, retry muted so the video at least moves, then unmute
+          speakerVid.muted = true
+          speakerVid.play().then(() => { speakerVid.muted = false; speakerVid.volume = 1 }).catch(() => {})
+        })
+      }
     }
     setSpeakingId(seg.participantId)
     console.log(`[GATE] Resumed to segment ${segIndex} (${seg.participantId}) at t=${seg.startTime}s`)
@@ -1078,7 +1091,8 @@ function MeetingRoomInner() {
         const isSpeakerRole = (p.role || 'speaker') === 'speaker'
 
         // Restart paused speaker videos (NO seek, NO volume changes)
-        if (isSpeakerRole) {
+        // BUT not during the AI listen-mode gate — they're intentionally frozen.
+        if (isSpeakerRole && !aiPausedRef.current) {
           const vid = videoRefs.current[p.id]
           if (vid && vid.paused && vid.readyState >= 2) {
             vid.play().catch(() => {})
