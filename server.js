@@ -80,6 +80,12 @@ app.prepare().then(() => {
       socket.to(roomId).emit('camera-toggle', { cameraOn })
     })
 
+    // AI speech gate: admin triggers the next AI segment — broadcast to others in room
+    socket.on('ai-resume', ({ roomId, segIndex }) => {
+      console.log(`[SOCKET] ai-resume from ${socket.id}: room=${roomId}, seg=${segIndex}`)
+      socket.to(roomId).emit('ai-resume', { segIndex })
+    })
+
     // Disconnect
     socket.on('disconnect', () => {
       const roomId = socket.data.roomId

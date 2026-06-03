@@ -70,6 +70,12 @@ function MeetingRoomInner() {
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set())
   const [meetingKilled, setMeetingKilled] = useState(false) // admin ended the meeting permanently
 
+  // AI speech gating: first segment auto-plays, then pauses (listen mode) until admin triggers next
+  const gateSegRef = useRef(0) // highest timeline segment index allowed to play (inclusive)
+  const aiPausedRef = useRef(false) // true when waiting for admin to resume the next segment
+  const [aiPaused, setAiPaused] = useState(false) // UI state for the "Faire parler l'IA" button
+  const applyResumeRef = useRef<(segIndex: number) => void>(() => {})
+
 
   // Preload: download videos fully into memory (blob URLs) before playback
   const [videoBlobUrls, setVideoBlobUrls] = useState<Record<string, string>>({})
@@ -474,6 +480,12 @@ function MeetingRoomInner() {
         setRemoteCameraOff(!cameraOn)
       })
 
+      // Listen for admin triggering the next AI segment
+      socket.on('ai-resume', ({ segIndex }: { segIndex: number }) => {
+        console.log(`[SOCKET] ai-resume → segment ${segIndex}`)
+        applyResumeRef.current(segIndex)
+      })
+
       // When existing users are already in the room (I'm the newcomer → I WAIT for their offer)
       socket.on('existing-users', async (users: { socketId: string; userName: string }[]) => {
         console.log(`[SOCKET] Existing users in room: ${users.length}`, users)
@@ -637,6 +649,27 @@ function MeetingRoomInner() {
       if (playStartRef.current === 0) return
       const now = (Date.now() - playStartRef.current) / 1000
 
+      // ===== AI SPEECH GATE =====
+      // After the current "gated" segment ends, freeze into listen mode (idle, muted)
+      // until the admin triggers the next segment via the "Faire parler l'IA" button.
+      const gateSeg = meetingData.timeline[gateSegRef.current]
+      const hasMoreSegments = gateSegRef.current < meetingData.timeline.length - 1
+      if (gateSeg && hasMoreSegments && now > gateSeg.endTime) {
+        if (!aiPausedRef.current) {
+          aiPausedRef.current = true
+          setAiPaused(true)
+          console.log(`[GATE] AI paused after segment ${gateSegRef.current} (listen mode)`)
+        }
+        // Force listen mode: mute everyone, no active speaker → idle pose shows
+        meetingData.participants.forEach(p => {
+          const vid = videoRefs.current[p.id]
+          if (vid && vid.volume > 0) vid.volume = 0
+        })
+        if (lastSpeaker) lastSpeaker = null
+        setSpeakingId(null)
+        return
+      }
+
       // ===== AUTO MODE =====
       const activeSeg = meetingData.timeline.find(s => now >= s.startTime && now <= s.endTime)
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
@@ -744,6 +777,54 @@ function MeetingRoomInner() {
     timerRef.current = setInterval(tick, 200)
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [joined, meetingData])
+
+  // Resume the AI to a specific segment (jump clock + seek + unmute speaker)
+  // Called by admin button (then broadcast) AND by client on Socket.IO 'ai-resume'
+  const applyResume = useCallback((segIndex: number) => {
+    if (!meetingData) return
+    const seg = meetingData.timeline[segIndex]
+    if (!seg) return
+
+    gateSegRef.current = segIndex
+    aiPausedRef.current = false
+    setAiPaused(false)
+    meetingEndedRef.current = false
+    setMeetingEnded(false)
+
+    // Jump the wall clock so the ticker is exactly at this segment's start
+    playStartRef.current = Date.now() - (seg.startTime * 1000)
+
+    // Mute everyone, then unmute + seek + play the active speaker
+    meetingData.participants.forEach(p => {
+      const vid = videoRefs.current[p.id]
+      if (vid) vid.volume = 0
+    })
+    const speakerVid = videoRefs.current[seg.participantId]
+    if (speakerVid) {
+      if (speakerVid.duration > 0) {
+        speakerVid.currentTime = seg.startTime <= speakerVid.duration ? seg.startTime : seg.startTime % speakerVid.duration
+      }
+      speakerVid.muted = false
+      speakerVid.volume = 1
+      if (speakerVid.paused && speakerVid.readyState >= 2) speakerVid.play().catch(() => {})
+    }
+    setSpeakingId(seg.participantId)
+    console.log(`[GATE] Resumed to segment ${segIndex} (${seg.participantId}) at t=${seg.startTime}s`)
+  }, [meetingData])
+
+  // Keep ref in sync so the Socket.IO closure always calls the latest version
+  applyResumeRef.current = applyResume
+
+  // Admin: trigger the next AI segment (and broadcast to client)
+  const triggerNextAI = useCallback(() => {
+    if (!meetingData) return
+    const next = gateSegRef.current + 1
+    if (next >= meetingData.timeline.length) return
+    applyResume(next)
+    if (socketRef.current) {
+      socketRef.current.emit('ai-resume', { roomId: meetingId, segIndex: next })
+    }
+  }, [meetingData, meetingId, applyResume])
 
   // Start all videos — videos are pre-loaded as blobs, so playback is instant (no network)
   const startAllVideos = useCallback(async (syncToTime?: number) => {
@@ -1266,6 +1347,19 @@ function MeetingRoomInner() {
         <div className="flex items-center gap-1 sm:gap-2">
           {scenarioStatus && (
             <span className="text-[10px] sm:text-[11px] text-[#5b5fc7] font-medium truncate max-w-[100px] sm:max-w-none">{scenarioStatus}</span>
+          )}
+          {isAdmin && !meetingKilled && gateSegRef.current < meetingData.timeline.length - 1 && (
+            <button
+              onClick={triggerNextAI}
+              disabled={!aiPaused}
+              className={`text-[10px] sm:text-[11px] font-bold px-2 sm:px-3 py-1 rounded transition-colors ${
+                aiPaused
+                  ? 'bg-[#5b5fc7] hover:bg-[#4a4eb5] text-white animate-pulse cursor-pointer'
+                  : 'bg-[#3a3a3a] text-gray-500 cursor-default'
+              }`}
+            >
+              {aiPaused ? 'Faire parler l\'IA' : 'IA en cours...'}
+            </button>
           )}
           {isAdmin && !meetingKilled && (
             <button
