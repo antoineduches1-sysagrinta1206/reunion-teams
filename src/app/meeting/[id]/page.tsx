@@ -70,10 +70,11 @@ function MeetingRoomInner() {
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set())
   const [meetingKilled, setMeetingKilled] = useState(false) // admin ended the meeting permanently
 
-  // AI speech gating: first segment auto-plays, then pauses (listen mode) until admin triggers next
-  const gateSegRef = useRef(0) // highest timeline segment index allowed to play (inclusive)
-  const aiPausedRef = useRef(false) // true when waiting for admin to resume the next segment
-  const [aiPaused, setAiPaused] = useState(false) // UI state for the "Faire parler l'IA" button
+  // AI speech gating: nothing plays until the admin triggers it. After each segment,
+  // it freezes into listen mode until the admin triggers the next one.
+  const gateSegRef = useRef(-1) // last segment index triggered to play (-1 = not started yet)
+  const aiPausedRef = useRef(true) // true when waiting for admin to trigger the next (or first) segment
+  const [aiPaused, setAiPaused] = useState(true) // UI state for the "Faire parler l'IA" button
   const applyResumeRef = useRef<(segIndex: number) => void>(() => {})
 
 
@@ -650,15 +651,18 @@ function MeetingRoomInner() {
       const now = (Date.now() - playStartRef.current) / 1000
 
       // ===== AI SPEECH GATE =====
-      // After the current "gated" segment ends, freeze into listen mode (idle, muted)
-      // until the admin triggers the next segment via the "Faire parler l'IA" button.
-      const gateSeg = meetingData.timeline[gateSegRef.current]
+      // Nothing plays until the admin triggers the first segment (gateSegRef < 0).
+      // After each gated segment ends, freeze into listen mode (idle, muted) until the
+      // admin triggers the next segment via the "Faire parler l'IA" button.
+      const notStarted = gateSegRef.current < 0
+      const gateSeg = notStarted ? null : meetingData.timeline[gateSegRef.current]
       const hasMoreSegments = gateSegRef.current < meetingData.timeline.length - 1
-      if (gateSeg && hasMoreSegments && now > gateSeg.endTime) {
+      const reachedGateEnd = gateSeg ? now > gateSeg.endTime : false
+      if (notStarted || (hasMoreSegments && reachedGateEnd)) {
         if (!aiPausedRef.current) {
           aiPausedRef.current = true
           setAiPaused(true)
-          console.log(`[GATE] AI paused after segment ${gateSegRef.current} (listen mode)`)
+          console.log(`[GATE] AI listen mode (started=${!notStarted}, seg=${gateSegRef.current})`)
         }
         // Force listen mode: mute + PAUSE every speaker video so it freezes at its
         // current frame (prevents it from running to the end during the listen period),
@@ -1372,7 +1376,7 @@ function MeetingRoomInner() {
                   : 'bg-[#3a3a3a] text-gray-500 cursor-default'
               }`}
             >
-              {aiPaused ? 'Faire parler l\'IA' : 'IA en cours...'}
+              {aiPaused ? (gateSegRef.current < 0 ? 'Démarrer l\'IA' : 'Faire parler l\'IA') : 'IA en cours...'}
             </button>
           )}
           {isAdmin && !meetingKilled && (
