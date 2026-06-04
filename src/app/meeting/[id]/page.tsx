@@ -12,6 +12,7 @@ interface MeetingParticipant {
   color: string
   videoUrl: string
   idleVideoUrl?: string
+  photoUrl?: string
   role?: 'speaker' | 'listener'
 }
 
@@ -78,6 +79,7 @@ function MeetingRoomInner() {
   const [aiPaused, setAiPaused] = useState(true) // UI state for the "Faire parler l'IA" button
   const [currentSegIdx, setCurrentSegIdx] = useState(-1) // segment currently playing (for panel highlight)
   const [showRemote, setShowRemote] = useState(false) // admin remote-control panel toggle
+  const [bridgeId, setBridgeId] = useState<string | null>(null) // participant whose photo bridge is active during a transition
   const applyResumeRef = useRef<(segIndex: number) => void>(() => {})
   const preparingRef = useRef(false) // true while pre-decoding a speaker frame before revealing it (smooth transition)
 
@@ -823,11 +825,26 @@ function MeetingRoomInner() {
     // black flash or a "video launching" jump — it looks like one natural take.
     preparingRef.current = true
 
+    const pid = seg.participantId
+    const photoUrl = meetingData.participants.find(p => p.id === pid)?.photoUrl
     const reveal = () => {
       if (!preparingRef.current) return // already revealed
       preparingRef.current = false
-      if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
-      setSpeakingId(seg.participantId)
+      if (photoUrl) {
+        // PHOTO BRIDGE: dissolve idle → neutral photo → speaking video.
+        // The photo, the idle pose and the speaker's first frame are all the same
+        // neutral pose, so each half-dissolve is between near-identical images →
+        // no ghosting/veil and no visible "video launching".
+        setBridgeId(pid)                     // photo fades in over idle (speaker still hidden)
+        setTimeout(() => {
+          setSpeakingId(pid)                 // swap idle→speaker underneath the opaque photo
+          if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
+        }, 130)
+        setTimeout(() => setBridgeId(null), 160) // photo fades out → speaker revealed
+      } else {
+        if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
+        setSpeakingId(pid)
+      }
     }
 
     if (speakerVid) {
@@ -1625,6 +1642,21 @@ function MeetingRoomInner() {
                               opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
                               zIndex: 2,
                               transition: 'none',
+                              pointerEvents: 'none',
+                            }}
+                          />
+                        )}
+                        {/* Photo bridge — neutral source frame, dissolved through during
+                            idle→speech transitions so the cut is imperceptible (z above idle) */}
+                        {isSpeakerRole && p.photoUrl && (
+                          <img
+                            src={p.photoUrl}
+                            alt=""
+                            className="absolute inset-0 w-full h-full object-cover"
+                            style={{
+                              opacity: bridgeId === p.id ? 1 : 0,
+                              zIndex: 3,
+                              transition: 'opacity 0.12s ease-in-out',
                               pointerEvents: 'none',
                             }}
                           />
