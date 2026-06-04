@@ -9,7 +9,7 @@ export interface MeetingData {
   createdAt: number
   adminKey: string
   participants: { id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string; role?: 'speaker' | 'listener' }[]
-  timeline: { participantId: string; startTime: number; endTime: number }[]
+  timeline: { participantId: string; startTime: number; endTime: number; text?: string }[]
   totalDuration: number
   excludedParticipants: string[] // participant IDs that have been kicked
   ended: boolean // true once meeting is definitively over

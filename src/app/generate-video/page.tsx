@@ -75,7 +75,7 @@ export default function ScenarioBuilder() {
   const [scenarioReady, setScenarioReady] = useState(false)
   const [participantVideos, setParticipantVideos] = useState<Record<string, string>>({})
   const [participantIdleVideos, setParticipantIdleVideos] = useState<Record<string, string>>({})
-  const [meetingTimeline, setMeetingTimeline] = useState<{ participantId: string; startTime: number; endTime: number }[]>([])
+  const [meetingTimeline, setMeetingTimeline] = useState<{ participantId: string; startTime: number; endTime: number; text?: string }[]>([])
   const [meetingDuration, setMeetingDuration] = useState(0)
   const [launched, setLaunched] = useState(false)
   const [meetingLinks, setMeetingLinks] = useState<string[]>([])
@@ -521,13 +521,19 @@ export default function ScenarioBuilder() {
     const LEADING = 0.5 // silence at start
     const TRAILING = 1.0 // silence at end
 
-    const timeline: { participantId: string; startTime: number; endTime: number }[] = []
+    const timeline: { participantId: string; startTime: number; endTime: number; text?: string }[] = []
     let cursor = LEADING
 
     for (const seg of ttsSegments) {
       const startTime = cursor
       const endTime = cursor + seg.duration
-      timeline.push({ participantId: seg.participantId, startTime, endTime })
+      // Recover the spoken text for this segment (expressions stripped) so the
+      // meeting remote-control panel can show what each speaker says.
+      const srcLine = validLines[seg.index]
+      const segText = srcLine
+        ? (srcLine.mode === 'text' ? parseExpressions(srcLine.text).cleanText : (srcLine.audioFileName || ''))
+        : ''
+      timeline.push({ participantId: seg.participantId, startTime, endTime, text: segText })
       const cLabel = cases.find(c => c.id === seg.participantId)?.label || seg.participantId
       addLog(`[TIMELINE] #${seg.index + 1} ${cLabel}: ${startTime.toFixed(1)}s - ${endTime.toFixed(1)}s`)
       cursor = endTime + GAP

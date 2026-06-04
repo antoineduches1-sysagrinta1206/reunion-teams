@@ -19,6 +19,7 @@ interface TimelineSegment {
   participantId: string
   startTime: number
   endTime: number
+  text?: string
 }
 
 interface MeetingData {
@@ -75,6 +76,8 @@ function MeetingRoomInner() {
   const gateSegRef = useRef(-1) // last segment index triggered to play (-1 = not started yet)
   const aiPausedRef = useRef(true) // true when waiting for admin to trigger the next (or first) segment
   const [aiPaused, setAiPaused] = useState(true) // UI state for the "Faire parler l'IA" button
+  const [currentSegIdx, setCurrentSegIdx] = useState(-1) // segment currently playing (for panel highlight)
+  const [showRemote, setShowRemote] = useState(false) // admin remote-control panel toggle
   const applyResumeRef = useRef<(segIndex: number) => void>(() => {})
 
 
@@ -651,14 +654,13 @@ function MeetingRoomInner() {
       const now = (Date.now() - playStartRef.current) / 1000
 
       // ===== AI SPEECH GATE =====
-      // Nothing plays until the admin triggers the first segment (gateSegRef < 0).
-      // After each gated segment ends, freeze into listen mode (idle, muted) until the
-      // admin triggers the next segment via the "Faire parler l'IA" button.
+      // Nothing plays until the admin triggers a segment (gateSegRef < 0).
+      // After ANY triggered segment ends, freeze back into listen mode (idle, muted)
+      // until the admin picks the next segment from the remote-control panel.
       const notStarted = gateSegRef.current < 0
       const gateSeg = notStarted ? null : meetingData.timeline[gateSegRef.current]
-      const hasMoreSegments = gateSegRef.current < meetingData.timeline.length - 1
       const reachedGateEnd = gateSeg ? now > gateSeg.endTime : false
-      if (notStarted || (hasMoreSegments && reachedGateEnd)) {
+      if (notStarted || reachedGateEnd) {
         if (!aiPausedRef.current) {
           aiPausedRef.current = true
           setAiPaused(true)
@@ -797,6 +799,7 @@ function MeetingRoomInner() {
     gateSegRef.current = segIndex
     aiPausedRef.current = false
     setAiPaused(false)
+    setCurrentSegIdx(segIndex)
     meetingEndedRef.current = false
     setMeetingEnded(false)
 
@@ -832,16 +835,21 @@ function MeetingRoomInner() {
   // Keep ref in sync so the Socket.IO closure always calls the latest version
   applyResumeRef.current = applyResume
 
-  // Admin: trigger the next AI segment (and broadcast to client)
-  const triggerNextAI = useCallback(() => {
+  // Admin: trigger a SPECIFIC AI segment (and broadcast to client)
+  const triggerSegment = useCallback((index: number) => {
     if (!meetingData) return
-    const next = gateSegRef.current + 1
-    if (next >= meetingData.timeline.length) return
-    applyResume(next)
+    if (index < 0 || index >= meetingData.timeline.length) return
+    applyResume(index)
     if (socketRef.current) {
-      socketRef.current.emit('ai-resume', { roomId: meetingId, segIndex: next })
+      socketRef.current.emit('ai-resume', { roomId: meetingId, segIndex: index })
     }
   }, [meetingData, meetingId, applyResume])
+
+  // Admin: trigger the next AI segment in order (convenience)
+  const triggerNextAI = useCallback(() => {
+    if (!meetingData) return
+    triggerSegment(gateSegRef.current + 1)
+  }, [meetingData, triggerSegment])
 
   // Start all videos — videos are pre-loaded as blobs, so playback is instant (no network)
   const startAllVideos = useCallback(async (syncToTime?: number) => {
@@ -1366,6 +1374,16 @@ function MeetingRoomInner() {
           {scenarioStatus && (
             <span className="text-[10px] sm:text-[11px] text-[#5b5fc7] font-medium truncate max-w-[100px] sm:max-w-none">{scenarioStatus}</span>
           )}
+          {isAdmin && !meetingKilled && (
+            <button
+              onClick={() => setShowRemote(v => !v)}
+              className={`text-[10px] sm:text-[11px] font-bold px-2 sm:px-3 py-1 rounded transition-colors ${
+                showRemote ? 'bg-[#5b5fc7] text-white' : 'bg-[#3a3a3a] hover:bg-[#4a4a4a] text-gray-200'
+              }`}
+            >
+              Scénario
+            </button>
+          )}
           {isAdmin && !meetingKilled && gateSegRef.current < meetingData.timeline.length - 1 && (
             <button
               onClick={triggerNextAI}
@@ -1413,6 +1431,38 @@ function MeetingRoomInner() {
           <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5 text-gray-500 cursor-pointer" />
         </div>
       </div>
+
+      {/* Admin remote-control panel: pick any speech segment to play */}
+      {isAdmin && !meetingKilled && showRemote && (
+        <div className="absolute top-12 right-2 z-40 w-80 max-h-[70vh] overflow-y-auto bg-[#1f1f1f] border border-[#3a3a3a] rounded-lg shadow-2xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-white text-[12px] font-bold">Scénario IA</span>
+            <span className="text-[10px] text-gray-400">{aiPaused ? 'En écoute' : 'IA parle...'}</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {meetingData.timeline.map((seg, i) => {
+              const name = meetingData.participants.find(p => p.id === seg.participantId)?.name || seg.participantId
+              const isActive = !aiPaused && currentSegIdx === i
+              const dur = Math.round(seg.endTime - seg.startTime)
+              return (
+                <button
+                  key={i}
+                  onClick={() => triggerSegment(i)}
+                  className={`text-left rounded p-2 border transition-colors ${
+                    isActive ? 'bg-[#5b5fc7] border-[#5b5fc7]' : 'bg-[#2a2a2a] border-[#3a3a3a] hover:bg-[#333]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="text-[11px] font-bold text-white">{i + 1}. {name}</span>
+                    <span className="text-[9px] text-gray-300">{dur}s</span>
+                  </div>
+                  <p className="text-[10px] text-gray-300 line-clamp-3">{seg.text || '(audio)'}</p>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Audio blocked banner */}
       {audioBlocked && (
