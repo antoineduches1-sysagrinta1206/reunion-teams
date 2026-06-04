@@ -826,25 +826,19 @@ function MeetingRoomInner() {
     preparingRef.current = true
 
     const pid = seg.participantId
-    const photoUrl = meetingData.participants.find(p => p.id === pid)?.photoUrl
     const reveal = () => {
       if (!preparingRef.current) return // already revealed
       preparingRef.current = false
-      if (photoUrl) {
-        // PHOTO BRIDGE: dissolve idle → neutral photo → speaking video.
-        // The photo, the idle pose and the speaker's first frame are all the same
-        // neutral pose, so each half-dissolve is between near-identical images →
-        // no ghosting/veil and no visible "video launching".
-        setBridgeId(pid)                     // photo fades in over idle (speaker still hidden)
-        setTimeout(() => {
-          setSpeakingId(pid)                 // swap idle→speaker underneath the opaque photo
-          if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
-        }, 130)
-        setTimeout(() => setBridgeId(null), 160) // photo fades out → speaker revealed
-      } else {
+      // BLUR-MASKED CUT: briefly defocus the tile (like a webcam refocus), hard-cut
+      // idle→speaker while everything is blurred so the pose change is imperceptible,
+      // then refocus. If a source photo exists it's also shown (blurred) as an extra
+      // neutral mask. Works for any meeting (photo optional).
+      setBridgeId(pid)                       // blur in (+ photo mask if available)
+      setTimeout(() => {
+        setSpeakingId(pid)                   // hard-cut idle→speaker at the blur peak
         if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
-        setSpeakingId(pid)
-      }
+      }, 140)
+      setTimeout(() => setBridgeId(null), 210) // refocus → sharp speaker revealed
     }
 
     if (speakerVid) {
@@ -1619,7 +1613,14 @@ function MeetingRoomInner() {
                             loop={false}
                             crossOrigin="anonymous"
                             className="absolute inset-0 w-full h-full object-cover"
-                            style={{ opacity: 1 }}
+                            style={{
+                              opacity: 1,
+                              // Blur-masked cut: during the idle→speech swap the whole stack
+                              // briefly defocuses so the pose change happens while blurred
+                              // (looks like a natural webcam refocus = imperceptible).
+                              filter: bridgeId === p.id ? 'blur(7px)' : 'none',
+                              transition: 'filter 0.13s ease-in-out',
+                            }}
                           />
                         )}
                         {/* Idle video — covers main video when participant is NOT speaking (smooth crossfade) */}
@@ -1641,7 +1642,10 @@ function MeetingRoomInner() {
                               // flips, an instant cut on the neutral frame is imperceptible.
                               opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
                               zIndex: 2,
-                              transition: 'none',
+                              // Opacity is an instant hard cut; the blur (masking the swap)
+                              // animates. Only 'filter' is listed so opacity stays instant.
+                              filter: bridgeId === p.id ? 'blur(7px)' : 'none',
+                              transition: 'filter 0.13s ease-in-out',
                               pointerEvents: 'none',
                             }}
                           />
@@ -1656,7 +1660,8 @@ function MeetingRoomInner() {
                             style={{
                               opacity: bridgeId === p.id ? 1 : 0,
                               zIndex: 3,
-                              transition: 'opacity 0.12s ease-in-out',
+                              filter: bridgeId === p.id ? 'blur(7px)' : 'none',
+                              transition: 'opacity 0.12s ease-in-out, filter 0.13s ease-in-out',
                               pointerEvents: 'none',
                             }}
                           />
