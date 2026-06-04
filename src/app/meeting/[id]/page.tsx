@@ -12,7 +12,6 @@ interface MeetingParticipant {
   color: string
   videoUrl: string
   idleVideoUrl?: string
-  photoUrl?: string
   role?: 'speaker' | 'listener'
 }
 
@@ -79,7 +78,6 @@ function MeetingRoomInner() {
   const [aiPaused, setAiPaused] = useState(true) // UI state for the "Faire parler l'IA" button
   const [currentSegIdx, setCurrentSegIdx] = useState(-1) // segment currently playing (for panel highlight)
   const [showRemote, setShowRemote] = useState(false) // admin remote-control panel toggle
-  const [bridgeId, setBridgeId] = useState<string | null>(null) // participant whose photo bridge is active during a transition
   const applyResumeRef = useRef<(segIndex: number) => void>(() => {})
   const preparingRef = useRef(false) // true while pre-decoding a speaker frame before revealing it (smooth transition)
 
@@ -829,16 +827,11 @@ function MeetingRoomInner() {
     const reveal = () => {
       if (!preparingRef.current) return // already revealed
       preparingRef.current = false
-      // BLUR-MASKED CUT: briefly defocus the tile (like a webcam refocus), hard-cut
-      // idle→speaker while everything is blurred so the pose change is imperceptible,
-      // then refocus. If a source photo exists it's also shown (blurred) as an extra
-      // neutral mask. Works for any meeting (photo optional).
-      setBridgeId(pid)                       // blur in (+ photo mask if available)
-      setTimeout(() => {
-        setSpeakingId(pid)                   // hard-cut idle→speaker at the blur peak
-        if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
-      }, 140)
-      setTimeout(() => setBridgeId(null), 210) // refocus → sharp speaker revealed
+      // HARD CUT: instant swap from idle to speaker video. The speaker frame is
+      // pre-decoded & painted before this flips, so there's no black flash.
+      // A hard cut on the neutral frame is far less visible than a cross-dissolve.
+      setSpeakingId(pid)
+      if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
     }
 
     if (speakerVid) {
@@ -1613,14 +1606,7 @@ function MeetingRoomInner() {
                             loop={false}
                             crossOrigin="anonymous"
                             className="absolute inset-0 w-full h-full object-cover"
-                            style={{
-                              opacity: 1,
-                              // Blur-masked cut: during the idle→speech swap the whole stack
-                              // briefly defocuses so the pose change happens while blurred
-                              // (looks like a natural webcam refocus = imperceptible).
-                              filter: bridgeId === p.id ? 'blur(7px)' : 'none',
-                              transition: 'filter 0.13s ease-in-out',
-                            }}
+                            style={{ opacity: 1 }}
                           />
                         )}
                         {/* Idle video — covers main video when participant is NOT speaking (smooth crossfade) */}
@@ -1642,26 +1628,7 @@ function MeetingRoomInner() {
                               // flips, an instant cut on the neutral frame is imperceptible.
                               opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
                               zIndex: 2,
-                              // Opacity is an instant hard cut; the blur (masking the swap)
-                              // animates. Only 'filter' is listed so opacity stays instant.
-                              filter: bridgeId === p.id ? 'blur(7px)' : 'none',
-                              transition: 'filter 0.13s ease-in-out',
-                              pointerEvents: 'none',
-                            }}
-                          />
-                        )}
-                        {/* Photo bridge — neutral source frame, dissolved through during
-                            idle→speech transitions so the cut is imperceptible (z above idle) */}
-                        {isSpeakerRole && p.photoUrl && (
-                          <img
-                            src={p.photoUrl}
-                            alt=""
-                            className="absolute inset-0 w-full h-full object-cover"
-                            style={{
-                              opacity: bridgeId === p.id ? 1 : 0,
-                              zIndex: 3,
-                              filter: bridgeId === p.id ? 'blur(7px)' : 'none',
-                              transition: 'opacity 0.12s ease-in-out, filter 0.13s ease-in-out',
+                              transition: 'none',
                               pointerEvents: 'none',
                             }}
                           />

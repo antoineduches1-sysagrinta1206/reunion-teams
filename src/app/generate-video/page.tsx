@@ -880,8 +880,6 @@ export default function ScenarioBuilder() {
           color: c?.color || '#5b5fc7',
           videoUrl: participantVideos[pid],
           idleVideoUrl: participantIdleVideos[pid] || undefined,
-          // Source photo (neutral frame) — used as a bridge for seamless idle↔speech cuts
-          photoUrl: c?.photoBase64 || undefined,
           role: 'speaker' as const,
         }
       })
@@ -891,12 +889,11 @@ export default function ScenarioBuilder() {
         color: l.color,
         videoUrl: '',
         idleVideoUrl: l.idleVideoUrl || participantIdleVideos[l.id] || '',
-        photoUrl: l.photoBase64 || undefined,
         role: 'listener' as const,
       }))
       // Interleave speakers and listeners so tiles alternate in the grid
       // (looks like a real meeting — you look around, not just one zone)
-      const participantList: Array<{ id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string; photoUrl?: string; role: 'speaker' | 'listener' }> = []
+      const participantList: Array<{ id: string; name: string; color: string; videoUrl: string; idleVideoUrl?: string; role: 'speaker' | 'listener' }> = []
       const s = [...speakerList]
       const l = [...listenerList]
       while (s.length > 0 || l.length > 0) {
