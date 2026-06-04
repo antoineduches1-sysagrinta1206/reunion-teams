@@ -1617,10 +1617,14 @@ function MeetingRoomInner() {
                             crossOrigin="anonymous"
                             className="absolute inset-0 w-full h-full object-cover"
                             style={{
-                              // Show idle when NOT speaking, hide when speaking
+                              // Show idle when NOT speaking, hide when speaking.
+                              // HARD CUT (no opacity dissolve): a cross-fade between two
+                              // different head poses creates a visible "veil"/ghosting.
+                              // Since the speaker frame is pre-decoded & painted before this
+                              // flips, an instant cut on the neutral frame is imperceptible.
                               opacity: !isSpeakerRole ? 1 : (isSpeaking ? 0 : 1),
                               zIndex: 2,
-                              transition: 'opacity 0.4s ease-in-out',
+                              transition: 'none',
                               pointerEvents: 'none',
                             }}
                           />
