@@ -79,6 +79,7 @@ function MeetingRoomInner() {
   const [currentSegIdx, setCurrentSegIdx] = useState(-1) // segment currently playing (for panel highlight)
   const [showRemote, setShowRemote] = useState(false) // admin remote-control panel toggle
   const applyResumeRef = useRef<(segIndex: number) => void>(() => {})
+  const preparingRef = useRef(false) // true while pre-decoding a speaker frame before revealing it (smooth transition)
 
 
   // Preload: download videos fully into memory (blob URLs) before playback
@@ -686,7 +687,9 @@ function MeetingRoomInner() {
       const currentSpeaker = activeSeg ? activeSeg.participantId : null
 
       // ===== SPEAKER TRANSITION =====
-      if (currentSpeaker !== lastSpeaker) {
+      // While applyResume is pre-decoding the speaker frame for a smooth crossfade,
+      // do NOT touch volume/visibility here — the reveal is handled once the frame is painted.
+      if (currentSpeaker !== lastSpeaker && !preparingRef.current) {
         // 1. Volume off on old speaker
         if (lastSpeaker) {
           const oldVid = videoRefs.current[lastSpeaker]
@@ -806,29 +809,62 @@ function MeetingRoomInner() {
     // Jump the wall clock so the ticker is exactly at this segment's start
     playStartRef.current = Date.now() - (seg.startTime * 1000)
 
-    // Mute everyone, then unmute + seek + play the active speaker
+    // Mute everyone (the speaker is unmuted only once revealed)
     meetingData.participants.forEach(p => {
       const vid = videoRefs.current[p.id]
       if (vid) vid.volume = 0
     })
+
     const speakerVid = videoRefs.current[seg.participantId]
-    if (speakerVid) {
-      if (speakerVid.duration > 0) {
-        speakerVid.currentTime = seg.startTime <= speakerVid.duration ? seg.startTime : seg.startTime % speakerVid.duration
-      }
-      speakerVid.muted = false
-      speakerVid.volume = 1
-      // Force playback even if the element previously ended/was frozen during listen mode
-      const p = speakerVid.play()
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => {
-          // If sound is blocked, retry muted so the video at least moves, then unmute
-          speakerVid.muted = true
-          speakerVid.play().then(() => { speakerVid.muted = false; speakerVid.volume = 1 }).catch(() => {})
-        })
-      }
+
+    // SMOOTH TRANSITION: keep the idle pose visible (preparingRef = true) while we
+    // seek + play the speaker video HIDDEN underneath. Only once its target frame is
+    // actually decoded & painted do we reveal it (crossfade), so there is never a
+    // black flash or a "video launching" jump — it looks like one natural take.
+    preparingRef.current = true
+
+    const reveal = () => {
+      if (!preparingRef.current) return // already revealed
+      preparingRef.current = false
+      if (speakerVid) { speakerVid.muted = false; speakerVid.volume = 1 }
+      setSpeakingId(seg.participantId)
     }
-    setSpeakingId(seg.participantId)
+
+    if (speakerVid) {
+      speakerVid.muted = true // start muted so audio doesn't lead the picture
+      speakerVid.volume = 0
+      const target = speakerVid.duration > 0
+        ? (seg.startTime <= speakerVid.duration ? seg.startTime : seg.startTime % speakerVid.duration)
+        : seg.startTime
+
+      const afterSeek = () => {
+        const pr = speakerVid.play()
+        if (pr && typeof pr.catch === 'function') {
+          pr.catch(() => { speakerVid.muted = true; speakerVid.play().catch(() => {}) })
+        }
+        // Reveal on the first freshly-painted frame (no black flash)
+        const anyVid = speakerVid as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }
+        if (typeof anyVid.requestVideoFrameCallback === 'function') {
+          anyVid.requestVideoFrameCallback(() => reveal())
+        } else {
+          requestAnimationFrame(() => requestAnimationFrame(reveal))
+        }
+      }
+
+      if (Math.abs(speakerVid.currentTime - target) > 0.05) {
+        const onSeeked = () => { speakerVid.removeEventListener('seeked', onSeeked); afterSeek() }
+        speakerVid.addEventListener('seeked', onSeeked)
+        speakerVid.currentTime = target
+        // Fallback in case 'seeked' never fires
+        setTimeout(() => { speakerVid.removeEventListener('seeked', onSeeked); afterSeek() }, 250)
+      } else {
+        afterSeek()
+      }
+      // Hard safety: never stay stuck hidden
+      setTimeout(reveal, 600)
+    } else {
+      reveal()
+    }
     console.log(`[GATE] Resumed to segment ${segIndex} (${seg.participantId}) at t=${seg.startTime}s`)
   }, [meetingData])
 
