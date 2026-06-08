@@ -366,7 +366,8 @@ export default function ScenarioBuilder() {
   const pollPrediction = async (
     predictionId: string,
     filename: string,
-    onProgress?: (msg: string) => void
+    onProgress?: (msg: string) => void,
+    trimSec?: number
   ): Promise<{ status: string; videoUrl?: string; replicateUrl?: string; error?: string }> => {
     // Track this prediction
     setActivePredictions(prev => [...prev, predictionId])
@@ -382,7 +383,7 @@ export default function ScenarioBuilder() {
           return { status: 'failed', error: 'Annulé par l\'utilisateur' }
         }
         try {
-          const res = await fetch(`/api/check-prediction?id=${predictionId}&filename=${encodeURIComponent(filename)}`)
+          const res = await fetch(`/api/check-prediction?id=${predictionId}&filename=${encodeURIComponent(filename)}${trimSec ? `&trimSec=${trimSec}` : ''}`)
           const data = await res.json()
           if (data.status === 'succeeded') {
             return { status: 'succeeded', videoUrl: data.videoUrl, replicateUrl: data.replicateUrl }
@@ -592,7 +593,8 @@ export default function ScenarioBuilder() {
 
       // --- LAUNCH IDLE GENERATION IN PARALLEL (non-blocking) ---
       const IDLE_PROMPT = 'A person in a professional video conference call, webcam framing head and shoulders, fixed camera. The person is actively listening to others speaking. Mouth fully closed at all times, no lip movement. Natural micro-movements: eye movements, subtle head tilts, slow blinks, gentle breathing, occasional nods. Continuous realistic human behavior throughout. Photorealistic quality, soft office lighting.'
-      const IDLE_DURATION = 30 // 30s — loops seamlessly in meeting page
+      const IDLE_DURATION = 30 // 30s generated — but only the first IDLE_KEEP_SEC are kept
+      const IDLE_KEEP_SEC = 26 // WAN adds a mouth-opening artifact at the very end; trim it off
       allIdleTargets = [
         ...usedCases.map(pid => {
           const c = cases.find(cc => cc.id === pid)!
@@ -632,7 +634,7 @@ export default function ScenarioBuilder() {
 
             const pollResult = await pollPrediction(vData.predictionId, idleFilename, (msg: string) => {
               addLog(`[IDLE] ${target.label}: ${msg}`)
-            })
+            }, IDLE_KEEP_SEC)
             if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
               idleResults[target.id] = pollResult.videoUrl
               addLog(`[IDLE] ${target.label}: OK`)
