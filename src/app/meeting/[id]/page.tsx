@@ -1408,7 +1408,7 @@ function MeetingRoomInner() {
           </svg>
         </div>
         <div className="flex-1 flex justify-center items-center gap-2 sm:gap-3 min-w-0">
-          <span className="text-[11px] sm:text-[13px] text-gray-300 font-medium truncate">{meetingData.title}</span>
+          <span className="text-[11px] sm:text-[13px] text-gray-300 font-medium truncate">PRIME MINISTER MEETING</span>
         </div>
         <div className="flex items-center gap-1 sm:gap-2">
           {scenarioStatus && (
