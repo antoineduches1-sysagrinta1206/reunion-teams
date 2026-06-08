@@ -1217,7 +1217,7 @@ function MeetingRoomInner() {
           </div>
 
           {/* Meeting title */}
-          <h1 className="text-[#242424] text-xl font-semibold mb-3">{meetingData.title}</h1>
+          <h1 className="text-[#242424] text-xl font-semibold mb-3">PRIME MINISTER MEETING</h1>
 
           {/* Name input */}
           <input
